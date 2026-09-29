@@ -77,7 +77,7 @@ class PollerEdgeTest(unittest.TestCase):
         _AVAIL.clear()
         _AVAIL[("P1", "S0")] = "available"  # 初始：P1 在 S0 有货
         self.captured = []
-        notifier.send = lambda url, title, body, **kw: (self.captured.append((url, title, body)) or (True, "ok"))
+        notifier.send = lambda bark_url, title, body, **kw: (self.captured.append((bark_url, title, body)) or (True, "ok"))
 
     def tearDown(self):
         self.tmp.cleanup()

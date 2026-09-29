@@ -135,6 +135,21 @@ class ValidateTest(unittest.TestCase):
         self.assertEqual(modes, ["merged", "per_store", "per_store", "merged"])
         self.assertTrue(all(m in config.VALID_PUSH_MODES for m in modes))
 
+    def test_order_url_passthrough(self):
+        # 透传用户填的 order_url；缺省为空串
+        cfg = config.validate({"targets": [
+            {"bark_url": "u1", "order_url": "https://buy.example.com/x"},
+            {"bark_url": "u2"},
+        ]})
+        urls = [t.get("order_url") for t in cfg["targets"]]
+        self.assertEqual(urls, ["https://buy.example.com/x", ""])
+        # 非字符串 / 纯空白 → 归一成空串
+        cfg = config.validate({"targets": [
+            {"bark_url": "u3", "order_url": "   "},
+            {"bark_url": "u4", "order_url": 123},
+        ]})
+        self.assertEqual([t["order_url"] for t in cfg["targets"]], ["", ""])
+
     def test_non_dict_input(self):
         self.assertEqual(config.validate(None), config.default_config())
         self.assertEqual(config.validate("junk")["targets"], [])

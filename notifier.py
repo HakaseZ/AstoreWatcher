@@ -14,6 +14,11 @@ import config as config_mod
 
 BARK_TIMEOUT = 10
 
+# 所有推送统一带的 Apple 图标（Bark icon 参数，iOS 15+）
+APPLE_ICON = "https://www.apple.com/favicon.ico"
+# 目标未填 order_url 时的兜底跳转地址（点横幅落地页）
+APPLE_HOME = "https://www.apple.com"
+
 # 一条推送里最多列出多少条变化，超出的末尾补「等 N 條」
 MAX_LISTED = 5
 
@@ -21,10 +26,11 @@ MAX_LISTED = 5
 DETAIL_LIMIT = 200
 
 
-def send(bark_url, title, body, *, group="AstoreWatcher", icon=None, level=None, is_archive=None):
+def send(bark_url, title, body, *, group="AstoreWatcher", icon=None, level=None, is_archive=None, url=None):
     """POST JSON 到 Bark，返回 (是否成功, 响应文本片段或错误信息)。
 
-    payload 只包含非空字段：title / body / group / icon / level / isArchive。
+    payload 只包含非空字段：title / body / group / icon / level / isArchive / url。
+    url 为点击通知横幅跳转的地址（无货→有货时带下单页）。
     """
     payload = {"title": title or "", "body": body or ""}
     if group:
@@ -35,6 +41,8 @@ def send(bark_url, title, body, *, group="AstoreWatcher", icon=None, level=None,
         payload["level"] = level
     if is_archive is not None:  # Bark 收 1/0；False 也要明确发出去
         payload["isArchive"] = 1 if is_archive else 0
+    if url:
+        payload["url"] = url
 
     try:
         data = json.dumps(payload, ensure_ascii=False).encode("utf-8")
@@ -97,12 +105,13 @@ def _change_line(change, sku_meta):
     return f"{_sku_label(change.get('part'), sku_meta)}\n門店：{config_mod.to_display(store)}\n狀態：{quote}"
 
 
-def _merged_messages(changes, sku_meta):
+def _merged_messages(changes, sku_meta, order_url):
     """merged 模式：按型号分组，每个型号一条推送（多型号 → 多条）。
 
     - 某型号下只有一个 SKU 变动 → 标题用完整型号（型号+颜色+容量）
     - 某型号下多个 SKU 变动 → 标题用型号名，正文逐条列出
     - 每条最多列 MAX_LISTED 条，超出补「等 N 條」
+    - 该型号分组内有任意「有货」变动时，附 order_url（点横幅去下单）
     """
     by_model = {}
     order = []
@@ -125,12 +134,16 @@ def _merged_messages(changes, sku_meta):
         body = "\n\n".join(_change_line(c, sku_meta) for c in listed)
         if len(items) > len(listed):
             body += f"\n\n等 {len(items) - len(listed)} 條"
-        messages.append((title, body))
+        url = order_url if any(c.get("to") == "available" for c in items) else None
+        messages.append((title, body, url))
     return messages
 
 
-def _per_store_messages(changes, sku_meta):
-    """per_store 模式：按门店分条，每家门店一条，正文列该店所有变化的 SKU。"""
+def _per_store_messages(changes, sku_meta, order_url):
+    """per_store 模式：按门店分条，每家门店一条，正文列该店所有变化的 SKU。
+
+    该店只要有任意「有货」变动，就附 order_url（点横幅去下单）。
+    """
     order = []
     by_store = {}
     for c in changes:
@@ -144,28 +157,32 @@ def _per_store_messages(changes, sku_meta):
     for store in order:
         items = by_store[store]
         # 该店只要有任意一个 SKU 有货，标题就算「有貨了」
-        title = f"{config_mod.to_display(store)} 有貨了" if any(c.get("to") == "available" for c in items) else f"{config_mod.to_display(store)} 無貨了"
+        has_available = any(c.get("to") == "available" for c in items)
+        title = f"{config_mod.to_display(store)} 有貨了" if has_available else f"{config_mod.to_display(store)} 無貨了"
         lines = []
         for c in items:
             label = _sku_label(c.get("part") or "", sku_meta)
             quote = c.get("quote") or ("可取貨" if c.get("to") == "available" else "暫無供應")
             lines.append(f"{label}：{quote}")
-        messages.append((title, "\n".join(lines)))
+        url = order_url if has_available else None
+        messages.append((title, "\n".join(lines), url))
     return messages
 
 
 def build_messages(target, changes, sku_meta):
-    """按 target["push_mode"] 把一组变化编排成待发消息，返回 [(title, body), ...]。
+    """按 target["push_mode"] 把一组变化编排成待发消息，返回 [(title, body, url), ...]。
 
     - merged（默认）：全部合并成一条，最多列 MAX_LISTED 条，其余补「等 N 條」
     - per_store：按门店分条，每条列该门店所有变化的 SKU
+    - url：该分组含「有货」变动时为 target 的 order_url（缺省回退 Apple 主页），否则 None
 
     纯函数，不发网络请求，方便单独测文案。
     """
     mode = (target or {}).get("push_mode")
+    order_url = (target or {}).get("order_url") or APPLE_HOME
     if mode == "per_store":
-        return _per_store_messages(changes, sku_meta)
-    return _merged_messages(changes, sku_meta)
+        return _per_store_messages(changes, sku_meta, order_url)
+    return _merged_messages(changes, sku_meta, order_url)
 
 
 def format_snapshot(snapshot, parts, sku_meta, stores=None):
@@ -248,5 +265,5 @@ def push_target(target, changes, sku_meta):
     if not changes:
         return []
 
-    return [send(target.get("bark_url"), title, body)
-            for title, body in build_messages(target, changes, sku_meta)]
+    return [send(target.get("bark_url"), title, body, icon=APPLE_ICON, url=url)
+            for title, body, url in build_messages(target, changes, sku_meta)]

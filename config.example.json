@@ -9,6 +9,7 @@
       "enabled": true,
       "parts": ["MJXV4ZA/A", "MJT34ZA/A"],
       "stores": ["Apple 中環", "Apple 銅鑼灣"],
+      "order_url": "",
       "notify_on": ["available"],
       "push_mode": "merged"
     }

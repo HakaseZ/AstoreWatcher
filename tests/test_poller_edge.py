@@ -98,9 +98,9 @@ class PollerEdgeTest(unittest.TestCase):
     def test_first_full_then_only_changes(self):
         t = self._target("t1", ["P1"], ["S0", "S1"])
         self._run(self._cfg([t]))
-        # 首次：一条「首次快照」全量推送
+        # 首次：一条「正在为您监测 iPhone 库存」全量推送
         self.assertEqual(len(self.captured), 1)
-        self.assertIn("首次快照", self.captured[0][1])
+        self.assertEqual(self.captured[0][1], "正在为您监测 iPhone 库存，当前库存如下")
 
         # 状态未变 → 不再推送
         self._run(self._cfg([t]))
@@ -113,7 +113,7 @@ class PollerEdgeTest(unittest.TestCase):
         title, body = self.captured[-1][1], self.captured[-1][2]
         self.assertEqual(title, "您关注的 iPhone 18 Pro Max 512GB 布根地紅色 监测到库存变化")
         self.assertIn("S1", body)
-        self.assertNotIn("首次快照", title)
+        self.assertIn("监测到库存变化", title)
 
     # ---- 2. edge A：新增 SKU 只推该 SKU 当前状态 ----
     def test_edge_a_new_sku_one_time(self):
@@ -126,7 +126,7 @@ class PollerEdgeTest(unittest.TestCase):
         self._run(self._cfg([t2]))
 
         # 本次应新增一条「P2 当前状态」推送（来自 t1 的 bark，且只含 P2）
-        new = [c for c in self.captured if "首次快照" not in c[1]]
+        new = [c for c in self.captured if "当前库存如下" not in c[1]]
         # 上一步首次全量 1 条 + 这次新增 SKU 1 条
         self.assertEqual(len(self.captured), 2)
         p2_msg = self.captured[-1]
@@ -151,7 +151,7 @@ class PollerEdgeTest(unittest.TestCase):
         before = len(self.captured)
         self._run(self._cfg([self._target("t1", ["P1"], ["S0"], enabled=True)]))
         self.assertIn("t1", state_mod.load_init(self.init_path))
-        self.assertTrue(any("首次快照" in c[1] for c in self.captured[before:]))
+        self.assertTrue(any("当前库存如下" in c[1] for c in self.captured[before:]))
 
     # ---- 4. 必填守卫：parts 或 stores 为空 → 跳过 ----
     def test_required_guard_skips_empty(self):
@@ -165,6 +165,23 @@ class PollerEdgeTest(unittest.TestCase):
         self.assertNotIn("https://bark/t_empty_parts", urls)
         self.assertNotIn("https://bark/t_empty_stores", urls)
 
+    # ---- 5b. 首轮空快照护栏：未匹配到任何 SKU 不推送、不写 init，下轮重试 ----
+    def test_first_full_empty_snapshot_no_push_no_init(self):
+        # 让本轮 snapshot 里完全没有目标关注的 P1（模拟苹果接口偶发空响应）
+        t = self._target("t1", ["P1"], ["S0"])
+        snap = _make_snapshot(["P99"])  # P99 不在目标 parts 内
+        with mock.patch.object(FakeSession, "fetch_all", return_value=(snap, [])):
+            self._run(self._cfg([t]))
+        # 不应有任何推送，且 init 标记不得写入（否则目标被锁死）
+        self.assertEqual(len(self.captured), 0)
+        self.assertNotIn("t1", state_mod.load_init(self.init_path))
+
+        # 下一轮恢复正常数据 → 应触发首次全量推送并落标记
+        self._run(self._cfg([t]))
+        self.assertEqual(len(self.captured), 1)
+        self.assertEqual(self.captured[0][1], "正在为您监测 iPhone 库存，当前库存如下")
+        self.assertIn("t1", state_mod.load_init(self.init_path))
+
     # ---- 5. 多型号按型号分条 ----
     def test_multi_model_split(self):
         _AVAIL[("P1", "S0")] = "available"
@@ -177,7 +194,7 @@ class PollerEdgeTest(unittest.TestCase):
         _AVAIL[("P2", "S0")] = "unavailable"
         self._run(self._cfg([t]))
         # 变动推送应为 2 条（两个型号各一条）
-        changes = [c for c in self.captured if "首次快照" not in c[1]]
+        changes = [c for c in self.captured if "当前库存如下" not in c[1]]
         self.assertEqual(len(changes), 2)
         titles = {c[1] for c in changes}
         self.assertIn("您关注的 iPhone 18 Pro Max 512GB 布根地紅色 监测到库存变化", titles)

@@ -187,7 +187,7 @@ def format_snapshot(snapshot, parts, sku_meta, stores=None):
                     for p in part_keys}
         part_keys = [p for p in part_keys if snapshot.get(p)]
 
-    title = f"首次快照：共 {len(part_keys)} 个 SKU"
+    title = "正在为您监测 iPhone 库存，当前库存如下"
     lines = []
     for part in part_keys:
         store_map = snapshot.get(part)

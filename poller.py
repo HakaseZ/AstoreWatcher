@@ -148,6 +148,14 @@ def run_once(cfg, sku_meta, profile, state_path, init_path, executable=None):
 
         # 首次加入：推送一次全量状态（含无货），并记录已推送的 SKU，之后只推变化
         if tid and tid not in inited:
+            # 空快照护栏：本轮 Apple 接口没返回任何关注中的 SKU（偶发空响应 /
+            # SSL 抖动）时，不推送、也不写 init 标记，下轮拿到真实数据再推全量，
+            # 避免发出「共 0 个 SKU」废纸推送并把目标锁死。
+            matched = [p for p in parts if p in snapshot]
+            if not matched:
+                log.warning("目标「%s」本轮未匹配到任何 SKU（Apple 接口可能暂未返回），"
+                            "暂不推送，下轮重试", t.get("name") or tid)
+                continue
             title, body = notifier.format_snapshot(snapshot, parts, sku_meta, stores)
             ok, detail = notifier.send(t.get("bark_url"), title, body)
             log.info("目标「%s」首次全量推送：%s", t.get("name") or tid, "成功" if ok else f"失败 {detail}")

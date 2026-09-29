@@ -559,14 +559,30 @@
     }
   });
 
-  // 目标行的启用开关
+  // 目标行的启用开关：拨一下立即持久化（像真正的 iOS 开关），无需再点顶部保存
   $("targetList").addEventListener("change", function (e) {
     var box = e.target.closest('input[data-act="toggle"]');
     if (!box) return;
     var id = box.getAttribute("data-id");
-    state.targets.forEach(function (t) { if (t.id === id) t.enabled = box.checked; });
+    var t = state.targets.find(function (x) { return x.id === id; });
+    if (!t) return;
+    t.enabled = box.checked;
     renderTargets();
     markDirty();
+    // 单独 PUT 该目标，立即落盘；不影响正在编辑的草稿
+    api("/api/targets/" + encodeURIComponent(id),
+        { method: "PUT", body: JSON.stringify(t) })
+      .then(function () {
+        savedSnapshot = JSON.stringify(state);
+        showMsg(t.enabled ? "已启用并立即生效" : "已禁用并立即生效", "ok");
+      })
+      .catch(function (err) {
+        // 落盘失败：回滚内存状态，避免界面与配置不一致
+        t.enabled = !box.checked;
+        box.checked = t.enabled;
+        renderTargets();
+        showMsg("开关保存失败：" + (err && err.message ? err.message : err), "err");
+      });
   });
 
   // 编辑器内：SKU / 门店 chip 切换，完成 / 取消，启用开关

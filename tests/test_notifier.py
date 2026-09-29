@@ -330,7 +330,7 @@ class FormatSnapshotTest(unittest.TestCase):
         snapshot = {"MJXV4ZA/A": self._snapshot([])["MJXV4ZA/A"],
                     "MJXQ4ZA/A": self._snapshot([])["MJXV4ZA/A"]}
         title, _ = notifier.format_snapshot(snapshot, None, SKU_META)
-        self.assertEqual(title, "首次快照：共 2 个 SKU")
+        self.assertEqual(title, "正在为您监测 iPhone 库存，当前库存如下")
 
     def test_mixed_availability_line(self):
         title, body = notifier.format_snapshot(self._snapshot(["ifc mall", "Canton Road"]),
@@ -352,7 +352,7 @@ class FormatSnapshotTest(unittest.TestCase):
         snapshot = {"MJXV4ZA/A": self._snapshot([])["MJXV4ZA/A"],
                     "MJXQ4ZA/A": self._snapshot(["ifc mall"])["MJXV4ZA/A"]}
         title, body = notifier.format_snapshot(snapshot, ["MJXQ4ZA/A"], SKU_META)
-        self.assertEqual(title, "首次快照：共 1 个 SKU")
+        self.assertEqual(title, "正在为您监测 iPhone 库存，当前库存如下")
         self.assertEqual(len(body.split("\n")), 1)
         self.assertIn("ifc mall 可取貨", body)
 
@@ -368,12 +368,12 @@ class FormatSnapshotTest(unittest.TestCase):
 
     def test_empty_snapshot(self):
         title, body = notifier.format_snapshot({}, None, SKU_META)
-        self.assertEqual(title, "首次快照：共 0 个 SKU")
+        self.assertEqual(title, "正在为您监测 iPhone 库存，当前库存如下")
         self.assertEqual(body, "")
 
     def test_bad_input_does_not_raise(self):
         title, body = notifier.format_snapshot(None, None, None)
-        self.assertEqual(title, "首次快照：共 0 个 SKU")
+        self.assertEqual(title, "正在为您监测 iPhone 库存，当前库存如下")
         self.assertEqual(body, "")
 
 

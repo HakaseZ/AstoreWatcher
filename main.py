@@ -17,8 +17,8 @@ def cmd_once(args):
     meta = {s["part"]: s for s in skus}
 
     session = BrowserSession(args.profile, location=args.location)
-    session.start()
     try:
+        session.start()
         snapshot, failed = session.fetch_all(parts)
         if failed and not snapshot:  # profile 被污染 → 重建重试
             session.close()

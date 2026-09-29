@@ -185,6 +185,28 @@ class InitFileTest(unittest.TestCase):
             json.dump([1, 2], f)
         self.assertEqual(state.load_init(self.path), {})
 
+    def test_update_init_preserves_untouched_keys(self):
+        # 并发修复的核心：update_init 必须在「最新」内容上应用增删，
+        # 不能把其他进程（web）并发写入的标记覆盖掉。
+        state.save_init(self.path, {
+            "web": {"since": "2026-09-29T00:00:00", "parts": ["P1"]},
+            "old": {"since": "2026-09-29T00:00:00", "parts": ["P2"]},
+        })
+        # 模拟 watcher 本轮只动了 watcher 目标：新增 w1、摘除 old
+        state.update_init(self.path, add={"w1": {"since": "2026-09-29T01:00:00", "parts": ["P3"]}},
+                          remove={"old"})
+        result = state.load_init(self.path)
+        # web 并发写入的标记必须被保留
+        self.assertEqual(result.get("web"), {"since": "2026-09-29T00:00:00", "parts": ["P1"]})
+        # watcher 自己的增删生效
+        self.assertEqual(result.get("w1"), {"since": "2026-09-29T01:00:00", "parts": ["P3"]})
+        self.assertNotIn("old", result)
+
+    def test_update_init_noop_when_empty(self):
+        state.save_init(self.path, {"keep": {"since": "x", "parts": []}})
+        state.update_init(self.path)  # 不传 add/remove 不应改动文件
+        self.assertEqual(state.load_init(self.path), {"keep": {"since": "x", "parts": []}})
+
 
 class FileTest(unittest.TestCase):
     def setUp(self):

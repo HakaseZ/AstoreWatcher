@@ -187,20 +187,15 @@ def push_cached_first_full(target: dict) -> dict:
     if not ok:
         return {"ok": False, "detail": detail}
 
-    # 推成功 → 写首推标记，让 Watcher 不再重复推全量
+    # 推成功 → 写首推标记，让 Watcher 不再重复推全量。
+    # 走加锁的 update_init：若此刻 Watcher 正在落盘，也不会互相覆盖（见 state.update_init）。
     init_path = os.path.join(os.path.dirname(os.path.abspath(config_path())), "init.json")
-    try:
-        inited = state_mod.load_init(init_path)
-    except OSError:
-        inited = {}
-    inited[target["id"]] = {
-        "since": datetime.now(HK_TZ).strftime("%Y-%m-%dT%H:%M:%S"),
-        "parts": list(target.get("parts") or []),
-    }
-    try:
-        state_mod.save_init(init_path, inited)
-    except OSError:
-        pass
+    state_mod.update_init(init_path, add={
+        target["id"]: {
+            "since": datetime.now(HK_TZ).strftime("%Y-%m-%dT%H:%M:%S"),
+            "parts": list(target.get("parts") or []),
+        }
+    })
     return {"ok": True, "detail": detail}
 
 

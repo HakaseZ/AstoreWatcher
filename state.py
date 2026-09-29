@@ -14,6 +14,8 @@
 不混进 state.json 的结构里。
 """
 
+import contextlib
+import fcntl
 import json
 import os
 import tempfile
@@ -66,7 +68,7 @@ def save(path, state):
 
 
 def load_init(path):
-    """读「已做过首次全量推送」的标记：`{target_id: "ISO 时间字符串"}`。
+    """读「已做过首次全量推送」的标记：`{target_id: {since, parts}}`。
 
     文件不存在 / 损坏 → 返回 {}（损坏时备份为 .bad）。不抛异常。
     """
@@ -86,28 +88,57 @@ def save_init(path, mapping):
     save(path, mapping if isinstance(mapping, dict) else {})
 
 
+@contextlib.contextmanager
+def _init_lock(init_path):
+    """对 init.json 的排他锁：用一个同名 .lock 文件，watcher 与 web 两进程共用，
+    保证 read-modify-write 期间不会互相覆盖标记。"""
+    lock_path = os.fspath(init_path) + ".lock"
+    with open(lock_path, "a+") as lf:
+        fcntl.flock(lf.fileno(), fcntl.LOCK_EX)
+        try:
+            yield
+        finally:
+            fcntl.flock(lf.fileno(), fcntl.LOCK_UN)
+
+
+def update_init(init_path, add=None, remove=None):
+    """加锁的 read-modify-write：在**最新**的 init.json 上应用增删。
+
+    watcher 一轮要跑几十秒浏览器查询，期间 web 进程可能并发写入标记
+    （重新启用/新建目标立即推全量、或摘除禁用目标标记）。若 watcher 直接把轮询前
+    读到的陈旧副本写回，会把 web 的并发改动覆盖掉 —— 表现为重复全量推送、或复活已
+    禁用目标的标记。这里在落盘前重新加锁读取最新内容，只应用本轮自己产生的增删，
+    保留对方的并发改动。
+
+    - add:    {tid: {since, parts}} 本轮要写入/更新的标记
+    - remove: 可迭代的 tid，本轮要摘除的标记（禁用/删除/缺失）
+    """
+    add = add or {}
+    remove = set(remove or [])
+    if not add and not remove:
+        return
+    with _init_lock(init_path):
+        cur = load_init(init_path)
+        for tid in remove:
+            cur.pop(tid, None)
+        for tid, val in add.items():
+            cur[tid] = val
+        save_init(init_path, cur)
+
+
 def prune_init(path, cfg):
     """摘除所有未启用 / 已删除目标的首推标记。
 
     首推标记在 Watcher 首次全量推送后写入；重新启用目标时要再推一次全量，标记必须在
     禁用发生的这一刻就清掉（后端收得到禁用请求），否则若 Watcher 没在禁用期间跑过一轮，
     标记残留，重新启用会被误判为已初始化而不再推全量。
+
+    走加锁的 update_init，避免与 watcher 的并发写互相覆盖。
     """
-    try:
-        inited = load_init(path)
-    except OSError:
-        return
     enabled_ids = {t.get("id") for t in (cfg.get("targets") or []) if t.get("enabled", True)}
-    changed = False
-    for tid in list(inited):
-        if tid not in enabled_ids:
-            inited.pop(tid, None)
-            changed = True
-    if changed:
-        try:
-            save_init(path, inited)
-        except OSError:
-            pass
+    to_remove = [tid for tid in load_init(path) if tid not in enabled_ids]
+    if to_remove:
+        update_init(path, remove=to_remove)
 
 
 def _display_of(entry):

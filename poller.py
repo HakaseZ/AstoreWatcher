@@ -87,36 +87,36 @@ def _target_parts(cfg, sku_meta=None):
 def run_once(cfg, sku_meta, profile, state_path, init_path, executable=None):
     """跑一轮查询 + 推送。返回 (成功取到的 snapshot, 失败批次列表)。"""
     prev = state_mod.load(state_path)
-    inited = state_mod.load_init(init_path)
-    touched_init = False
+    # baseline 仅作本轮判断用的只读快照；真正的写盘走下面加锁的 update_init，
+    # 避免数十秒浏览器轮询期间把 web 进程并发写的标记覆盖掉（见 state.update_init）。
+    baseline = state_mod.load_init(init_path)
+    to_remove = set()          # 本轮要摘除的首推标记（禁用/删除/缺失）
+    to_add = {}                # 本轮要写入的首推标记：{tid: {since, parts}}
     now = datetime.datetime.now().isoformat(timespec="seconds")
 
-    # 清理 / 迁移 init 标记（放在最前，确保即使所有目标都被禁用也能及时清标记）：
-    # - 已被删除的目标 → 移除标记
-    # - 已被禁用的目标 → 移除标记，使其重新启用时再次走「首次全量推送」（edge B）
+    # 计算标记增删（放在最前，确保即使所有目标都被禁用也能及时清标记）：
+    # - 已被删除 / 禁用的目标 → 摘除标记，使其重新启用时再次走「首次全量推送」（edge B）
     # - 旧格式（值为字符串时间戳）→ 迁移为 {since, parts}，避免升级后把已有 SKU 当新 SKU 重推
     targets_by_id = {t.get("id"): t for t in (cfg.get("targets") or [])}
-    for tid in list(inited):
+    for tid, val in list(baseline.items()):
         t = targets_by_id.get(tid)
         if t is None or not t.get("enabled", True):
-            inited.pop(tid, None)
-            touched_init = True
+            to_remove.add(tid)
             continue
-        if isinstance(inited[tid], str):  # 旧格式迁移
-            inited[tid] = {"since": inited[tid], "parts": list(t.get("parts") or [])}
-            touched_init = True
+        if isinstance(val, str):  # 旧格式迁移
+            to_add[tid] = {"since": val, "parts": list(t.get("parts") or [])}
 
     parts = _target_parts(cfg, sku_meta)
     if not parts:
         log.info("没有启用任何推送目标或没有勾选 SKU，本轮跳过")
-        if touched_init:
-            state_mod.save_init(init_path, inited)
+        if to_remove:
+            state_mod.update_init(init_path, remove=to_remove)
         return {}, []
 
     session = BrowserSession(profile, location=cfg.get("location", "中環"),
                              executable=executable)
-    session.start()
     try:
+        session.start()
         snapshot, failed = session.fetch_all(parts)
         # 全批失败：多半是 profile 被污染，丢弃重建再试一轮
         if failed and not snapshot:
@@ -147,7 +147,7 @@ def run_once(cfg, sku_meta, profile, state_path, init_path, executable=None):
             continue
 
         # 首次加入：推送一次全量状态（含无货），并记录已推送的 SKU，之后只推变化
-        if tid and tid not in inited:
+        if tid and tid not in baseline:
             # 空快照护栏：本轮 Apple 接口没返回任何关注中的 SKU（偶发空响应 /
             # SSL 抖动）时，不推送、也不写 init 标记，下轮拿到真实数据再推全量，
             # 避免发出「共 0 个 SKU」废纸推送并把目标锁死。
@@ -160,12 +160,11 @@ def run_once(cfg, sku_meta, profile, state_path, init_path, executable=None):
             ok, detail = notifier.send(t.get("bark_url"), title, body)
             log.info("目标「%s」首次全量推送：%s", t.get("name") or tid, "成功" if ok else f"失败 {detail}")
             if ok:  # 失败则不落标记，下一轮重试全量推送
-                inited[tid] = {"since": now, "parts": list(parts)}
-                touched_init = True
+                to_add[tid] = {"since": now, "parts": list(parts)}
             continue
 
         # 已初始化：拆成「已有 SKU 的变化」+「新增 SKU 的当前状态」
-        seen = set((inited.get(tid) or {}).get("parts") or [])
+        seen = set((baseline.get(tid) or {}).get("parts") or [])
         new_parts = [p for p in parts if p not in seen]
         existing = [p for p in parts if p in seen]
 
@@ -181,9 +180,8 @@ def run_once(cfg, sku_meta, profile, state_path, init_path, executable=None):
                     log.error("推送失败：%s", r[1])
             # 无实际推送（门店过滤后为空）或全部成功才记为已见；否则下一轮重试
             if not results or (ok == len(results)):
-                inited[tid] = {"since": (inited.get(tid) or {}).get("since") or now,
+                to_add[tid] = {"since": (baseline.get(tid) or {}).get("since") or now,
                                "parts": list(parts)}
-                touched_init = True
 
         # 已有 SKU：只推库存变动
         if existing:
@@ -197,8 +195,8 @@ def run_once(cfg, sku_meta, profile, state_path, init_path, executable=None):
                 if not r[0]:
                     log.error("推送失败：%s", r[1])
 
-    if touched_init:
-        state_mod.save_init(init_path, inited)
+    if to_remove or to_add:
+        state_mod.update_init(init_path, add=to_add, remove=to_remove)
     state_mod.save(state_path, state_mod.apply(prev, snapshot))
     return snapshot, failed
 

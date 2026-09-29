@@ -123,9 +123,8 @@
 <header class="topbar">
   <h1>AstoreWatcher 配置</h1>
   <div class="topbar-right">
-    <span id="dirtyTag" class="tag">已保存</span>
+    <span id="dirtyTag" class="tag">已自动保存</span>
     <button id="btnReload">重新加载</button>
-    <button id="btnSaveTop" class="primary">保存</button>
   </div>
 </header>
 
@@ -147,7 +146,7 @@
     <h2>推送目标</h2>
     <div id="targetList"></div>
     <div class="toolbar"><button id="btnAdd" class="primary">+ 新增目标</button></div>
-    <div class="hint">每个目标独立关注一套 SKU 与门店，可分别推到不同 Bark。「测试推送」会先自动保存当前配置。<br>
+    <div class="hint">每个目标独立关注一套 SKU 与门店，可分别推到不同 Bark。「测试推送」发送当前已保存的配置。<br>
       • <b>SKU 与门店都必填</b>。<br>
       • 新目标首次推送一次全量；之后只在库存变动（补货 / 售完）时推送。<br>
       • 禁用后再启用，会再推一次全量。</div>
@@ -195,10 +194,6 @@
     el.scrollIntoView({ block: "nearest" });
   }
 
-  function newId() {
-    return "t" + Math.random().toString(16).slice(2, 10) + Date.now().toString(16).slice(-4);
-  }
-
   async function api(path, options) {
     var opts = Object.assign({}, options || {});
     if (opts.body !== undefined && opts.body !== null) {
@@ -229,10 +224,14 @@
   }
 
   function markDirty() {
-    var dirty = savedSnapshot !== JSON.stringify(state);
     var el = $("dirtyTag");
-    el.textContent = dirty ? "有未保存的修改" : "已保存";
-    el.className = dirty ? "tag dirty" : "tag";
+    if (draft) {
+      el.textContent = "编辑中（完成即保存）";
+      el.className = "tag dirty";
+    } else {
+      el.textContent = "已自动保存";
+      el.className = "tag";
+    }
   }
 
   function hasDraft() { return !!draft; }
@@ -324,14 +323,13 @@
 
   function editorHtml() {
     var t = draft;
-    // 新增目标默认启用，不显示开关；只有编辑已有目标时才需要开关（可禁用）
-    var enabledField = t.id ? (
+    // 启用开关始终在编辑面板内（新增默认启用，编辑可改）；无卡片快捷开关
+    var enabledField =
       '<div class="field">' +
         '<label class="switch"><input type="checkbox" id="edEnabled"' + (t.enabled ? " checked" : "") +
           '><span class="slider"></span><span class="switch-label">启用这个目标</span></label>' +
         '<div class="hint">关闭后该目标停止推送；重新启用会再次推送一次全量状态。</div>' +
-      '</div>'
-    ) : '';
+      '</div>';
     return '' +
       '<div class="editor-inline">' +
         '<h2>' + (t.id ? "编辑目标" : "新增目标") + '</h2>' +
@@ -389,8 +387,7 @@
             '　库存变动即推送　推送方式：' + esc(pushModeLabel(t)) + '</div>' +
         '</div>' +
         '<div class="tactions">' +
-          '<label class="switch switch-sm"><input type="checkbox" data-act="toggle" data-id="' + esc(t.id) + '"' + (t.enabled ? " checked" : "") +
-            '><span class="slider"></span><span class="switch-label">启用</span></label>' +
+          '<span class="tag' + (t.enabled ? "" : " dirty") + '">' + (t.enabled ? "启用中" : "已禁用") + '</span>' +
           '<button type="button" data-act="edit" data-id="' + esc(t.id) + '">编辑</button>' +
           '<button type="button" data-act="test" data-id="' + esc(t.id) + '">测试推送</button>' +
           '<button type="button" class="danger" data-act="del" data-id="' + esc(t.id) + '">删除</button>' +
@@ -417,46 +414,23 @@
 
   // ------------------------------------------------------------ 保存 / 测试推送
 
-  function validateTargets() {
-    for (var i = 0; i < state.targets.length; i++) {
-      var t = state.targets[i];
-      if (!String(t.bark_url || "").trim()) {
-        return "目标「" + t.name + "」的 Bark 地址为空，请先补填";
-      }
-      if (!(t.parts || []).length) {
-        return "目标「" + t.name + "」尚未选择任何 SKU（SKU 为必选）";
-      }
-      if (!(t.stores || []).length) {
-        return "目标「" + t.name + "」尚未选择任何推送门店（门店为必选）";
-      }
-    }
-    return null;
-  }
-
-  async function saveConfig() {
-    if (draft) {
-      showMsg("请先点「完成」结束当前目标编辑，再保存", "err");
-      return false;
-    }
-    var err = validateTargets();
-    if (err) { showMsg("保存失败：" + err, "err"); return false; }
+  // 自动保存整份配置（轮询间隔等整体项）。编辑草稿中不调用，避免覆盖未提交的目标。
+  // 不再有独立的「保存」按钮——任何改动即时落盘。
+  async function persistConfig() {
+    if (draft) return false;
     if (state.interval_sec < MIN_INTERVAL) state.interval_sec = MIN_INTERVAL;
     try {
       state = await api("/api/config", { method: "PUT", body: JSON.stringify(state) });
     } catch (e) {
-      showMsg("保存失败：" + e.message, "err");
+      showMsg("自动保存失败：" + e.message, "err");
       return false;
     }
     savedSnapshot = JSON.stringify(state);
-    renderAll();
-    showMsg("已保存", "ok");
+    markDirty();
     return true;
   }
 
   async function testTarget(id) {
-    if (savedSnapshot !== JSON.stringify(state)) {
-      if (!(await saveConfig())) return;
-    }
     showMsg("正在发送测试推送…", "info");
     try {
       var r = await api("/api/targets/" + encodeURIComponent(id) + "/test", { method: "POST" });
@@ -484,38 +458,55 @@
     if (card) card.scrollIntoView({ block: "start", behavior: "smooth" });
   }
 
-  function commitDraft() {
+  async function commitDraft() {
     var name = $("edName").value.trim();
-    draft.name = name || "未命名目标";
-    draft.bark_url = $("edUrl").value.trim();
-    // 新增目标不渲染开关，默认启用；编辑已有目标时才读取开关
-    draft.enabled = $("edEnabled") ? $("edEnabled").checked : true;
-    draft.notify_on = ["available", "unavailable"];  // 库存翻转即推送，两个方向都推
-    draft.push_mode = $("edMode").value === "per_store" ? "per_store" : "merged";
+    var bark_url = $("edUrl").value.trim();
+    var enabled = $("edEnabled").checked;  // 开关始终在编辑面板内
+    var push_mode = $("edMode").value === "per_store" ? "per_store" : "merged";
 
-    if (!draft.bark_url) {
-      showMsg("「" + draft.name + "」的 Bark 地址不能为空", "err");
+    if (!bark_url) {
+      showMsg("「" + (name || "未命名目标") + "」的 Bark 地址不能为空", "err");
       $("edUrl").focus();
       return;
     }
     if (!draft.parts.length) {
-      showMsg("「" + draft.name + "」至少选择一个 SKU（SKU 为必选）", "err");
+      showMsg("「" + (name || "未命名目标") + "」至少选择一个 SKU（SKU 为必选）", "err");
       return;
     }
     if (!draft.stores.length) {
-      showMsg("「" + draft.name + "」至少选择一个推送门店（门店为必选）", "err");
+      showMsg("「" + (name || "未命名目标") + "」至少选择一个推送门店（门店为必选）", "err");
       return;
     }
 
-    if (draft.id === null) {
-      draft.id = newId();
-      state.targets.push(draft);
-    } else {
-      state.targets = state.targets.map(function (t) { return t.id === draft.id ? draft : t; });
+    var payload = {
+      name: name || "未命名目标",
+      bark_url: bark_url,
+      enabled: enabled,
+      parts: draft.parts,
+      stores: draft.stores,
+      notify_on: ["available", "unavailable"],  // 库存翻转即推送，两个方向都推
+      push_mode: push_mode,
+    };
+
+    var id = draft.id;
+    draft = null;  // 先收起草稿，再请求，避免并发渲染歧义
+    try {
+      var saved;
+      if (id === null) {
+        saved = await api("/api/targets", { method: "POST", body: JSON.stringify(payload) });
+        state.targets.push(saved);
+      } else {
+        saved = await api("/api/targets/" + encodeURIComponent(id),
+                          { method: "PUT", body: JSON.stringify(payload) });
+        state.targets = state.targets.map(function (t) { return t.id === id ? saved : t; });
+      }
+    } catch (e) {
+      showMsg("保存失败：" + e.message, "err");
+      return;
     }
-    draft = null;
+    savedSnapshot = JSON.stringify(state);
     renderAll();
-    markDirty();
+    showMsg("已保存", "ok");
   }
 
   function cancelDraft() {
@@ -526,17 +517,19 @@
 
   // ------------------------------------------------------------ 事件绑定（委托）
 
+  var intervalTimer = null;
   $("inpInterval").addEventListener("input", function () {
     var v = Number(this.value);
     state.interval_sec = isNaN(v) ? 0 : v;
     checkPollHints();
     markDirty();
+    if (intervalTimer) clearTimeout(intervalTimer);
+    intervalTimer = setTimeout(persistConfig, 600);  // 改好即保存
   });
 
   $("btnAdd").addEventListener("click", function () { startEdit(null); });
-  $("btnSaveTop").addEventListener("click", saveConfig);
   $("btnReload").addEventListener("click", function () {
-    if (savedSnapshot !== JSON.stringify(state) && !confirm("有未保存的修改，确定丢弃并重新加载？")) return;
+    if (draft && !confirm("有未完成的编辑，确定重新加载并丢弃？")) return;
     loadAll();
   });
 
@@ -556,33 +549,15 @@
       state.targets = state.targets.filter(function (x) { return x.id !== id; });
       renderTargets();
       markDirty();
+      api("/api/targets/" + encodeURIComponent(id), { method: "DELETE" })
+        .then(function () {
+          savedSnapshot = JSON.stringify(state);
+          showMsg("已删除并保存", "ok");
+        })
+        .catch(function (err) {
+          showMsg("删除保存失败：" + (err && err.message ? err.message : err), "err");
+        });
     }
-  });
-
-  // 目标行的启用开关：拨一下立即持久化（像真正的 iOS 开关），无需再点顶部保存
-  $("targetList").addEventListener("change", function (e) {
-    var box = e.target.closest('input[data-act="toggle"]');
-    if (!box) return;
-    var id = box.getAttribute("data-id");
-    var t = state.targets.find(function (x) { return x.id === id; });
-    if (!t) return;
-    t.enabled = box.checked;
-    renderTargets();
-    markDirty();
-    // 单独 PUT 该目标，立即落盘；不影响正在编辑的草稿
-    api("/api/targets/" + encodeURIComponent(id),
-        { method: "PUT", body: JSON.stringify(t) })
-      .then(function () {
-        savedSnapshot = JSON.stringify(state);
-        showMsg(t.enabled ? "已启用并立即生效" : "已禁用并立即生效", "ok");
-      })
-      .catch(function (err) {
-        // 落盘失败：回滚内存状态，避免界面与配置不一致
-        t.enabled = !box.checked;
-        box.checked = t.enabled;
-        renderTargets();
-        showMsg("开关保存失败：" + (err && err.message ? err.message : err), "err");
-      });
   });
 
   // 编辑器内：SKU / 门店 chip 切换，完成 / 取消，启用开关

@@ -71,16 +71,11 @@ def _clamp_int(value, default, minimum):
 
 
 def _normalize_notify_on(raw):
-    """只保留 available/unavailable 并去重；为空时填 ["available"]。"""
-    if isinstance(raw, str):
-        raw = [raw]
-    if not isinstance(raw, (list, tuple)):
-        raw = []
-    out = []
-    for item in raw:
-        if item in VALID_NOTIFY_ON and item not in out:
-            out.append(item)
-    return out or ["available"]
+    """库存翻转即推送：有货<->无货 两个方向都推，无需用户选择，始终返回两者。
+
+    raw 参数保留仅为兼容旧配置字段，不再影响结果。
+    """
+    return ["available", "unavailable"]
 
 
 def _normalize_push_mode(raw):

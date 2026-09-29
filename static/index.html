@@ -92,9 +92,26 @@
     display: inline-block; width: 14px; height: 14px; border-radius: 50%;
     vertical-align: -2px; margin-right: 6px; border: 1px solid rgba(0,0,0,.18);
   }
-  /* 内联编辑器：嵌在目标行下方 / 列表末尾，用左侧色条与浅底区分 */
+  /* 开关（替代 checkbox）：启用目标 / 行内启用 */
+  .switch { display: inline-flex; align-items: center; gap: 8px; cursor: pointer; user-select: none; }
+  .switch input { position: absolute; opacity: 0; width: 0; height: 0; }
+  .switch .slider {
+    position: relative; width: 40px; height: 22px; flex: 0 0 auto;
+    background: #d8d8dd; border-radius: 999px; transition: background .2s;
+  }
+  .switch .slider::before {
+    content: ""; position: absolute; left: 2px; top: 2px; width: 18px; height: 18px;
+    background: #fff; border-radius: 50%; transition: transform .2s; box-shadow: 0 1px 2px rgba(0,0,0,.3);
+  }
+  .switch input:checked + .slider { background: var(--accent); }
+  .switch input:checked + .slider::before { transform: translateX(18px); }
+  .switch .switch-label { font-weight: 600; }
+  .switch.switch-sm .slider { width: 34px; height: 20px; }
+  .switch.switch-sm .slider::before { width: 16px; height: 16px; }
+  .switch.switch-sm input:checked + .slider::before { transform: translateX(14px); }
+  /* 内联编辑器：嵌在目标行下方 / 列表末尾，用浅底与边框区分（无左侧色条） */
   .editor-inline {
-    background: #fbfdff; border: 1px solid #b9d6f5; border-left: 4px solid var(--accent);
+    background: #fafafa; border: 1px solid var(--line);
     border-radius: 8px; padding: 14px; margin: 0 0 12px;
   }
   .editor-inline h2 { font-size: 14px; margin: 0 0 12px; color: var(--accent); }
@@ -206,14 +223,6 @@
     return data;
   }
 
-  function notifyLabel(t) {
-    var on = t.notify_on || [];
-    var parts = [];
-    if (on.indexOf("available") >= 0) parts.push("有货时");
-    if (on.indexOf("unavailable") >= 0) parts.push("无货时");
-    return parts.length ? parts.join("、") : "未选择（不会推送）";
-  }
-
   function pushModeLabel(t) {
     return t.push_mode === "per_store" ? "按门店分条" : "汇总一条";
   }
@@ -314,7 +323,6 @@
 
   function editorHtml() {
     var t = draft;
-    var on = t.notify_on || [];
     return '' +
       '<div class="editor-inline">' +
         '<h2>' + (t.id ? "编辑目标" : "新增目标") + '</h2>' +
@@ -330,13 +338,9 @@
           '</div>' +
         '</div>' +
         '<div class="field">' +
-          '<label><input type="checkbox" id="edEnabled"' + (t.enabled ? " checked" : "") + '> 启用这个目标</label>' +
-        '</div>' +
-        '<div class="field">' +
-          '<label>推送时机</label>' +
-          '<label style="margin-right:16px"><input type="checkbox" id="edAvail" value="available"' + (on.indexOf("available") >= 0 ? " checked" : "") + '> 有货时</label>' +
-          '<label><input type="checkbox" id="edUnavail" value="unavailable"' + (on.indexOf("unavailable") >= 0 ? " checked" : "") + '> 无货时</label>' +
-          '<div class="hint" id="hintNotify"></div>' +
+          '<label class="switch"><input type="checkbox" id="edEnabled"' + (t.enabled ? " checked" : "") +
+            '><span class="slider"></span><span class="switch-label">启用这个目标</span></label>' +
+          '<div class="hint">关闭后该目标停止推送；重新启用会再次推送一次全量状态。</div>' +
         '</div>' +
         '<div class="field">' +
           '<label for="edMode">推送方式</label>' +
@@ -377,11 +381,11 @@
           '<div class="tmeta">' + esc(t.bark_url || "（未填写 Bark 地址）") + '</div>' +
           '<div class="tmeta">关注 SKU：<b>' + t.parts.length + '</b> 个　推送门店：' +
             (t.stores && t.stores.length ? ('<b>' + t.stores.length + '</b> 家') : '<span class="req">未选</span>') +
-            '　推送时机：' + esc(notifyLabel(t)) +
-            '　推送方式：' + esc(pushModeLabel(t)) + '</div>' +
+            '　库存变动即推送　推送方式：' + esc(pushModeLabel(t)) + '</div>' +
         '</div>' +
         '<div class="tactions">' +
-          '<label><input type="checkbox" data-act="toggle" data-id="' + esc(t.id) + '"' + (t.enabled ? " checked" : "") + '> 启用</label>' +
+          '<label class="switch switch-sm"><input type="checkbox" data-act="toggle" data-id="' + esc(t.id) + '"' + (t.enabled ? " checked" : "") +
+            '><span class="slider"></span><span class="switch-label">启用</span></label>' +
           '<button type="button" data-act="edit" data-id="' + esc(t.id) + '">编辑</button>' +
           '<button type="button" data-act="test" data-id="' + esc(t.id) + '">测试推送</button>' +
           '<button type="button" class="danger" data-act="del" data-id="' + esc(t.id) + '">删除</button>' +
@@ -413,9 +417,6 @@
       var t = state.targets[i];
       if (!String(t.bark_url || "").trim()) {
         return "目标「" + t.name + "」的 Bark 地址为空，请先补填";
-      }
-      if (!(t.notify_on || []).length) {
-        return "目标「" + t.name + "」至少选择一个推送时机（有货时 / 无货时）";
       }
       if (!(t.parts || []).length) {
         return "目标「" + t.name + "」尚未选择任何 SKU（SKU 为必选）";
@@ -483,21 +484,12 @@
     draft.name = name || "未命名目标";
     draft.bark_url = $("edUrl").value.trim();
     draft.enabled = $("edEnabled").checked;
-    var on = [];
-    if ($("edAvail").checked) on.push("available");
-    if ($("edUnavail").checked) on.push("unavailable");
-    draft.notify_on = on;
+    draft.notify_on = ["available", "unavailable"];  // 库存翻转即推送，两个方向都推
     draft.push_mode = $("edMode").value === "per_store" ? "per_store" : "merged";
 
     if (!draft.bark_url) {
       showMsg("「" + draft.name + "」的 Bark 地址不能为空", "err");
       $("edUrl").focus();
-      return;
-    }
-    if (!on.length) {
-      $("hintNotify").textContent = "至少选择一个推送时机";
-      $("hintNotify").className = "hint warn";
-      showMsg("「" + draft.name + "」至少选择一个推送时机（有货时 / 无货时）", "err");
       return;
     }
     if (!draft.parts.length) {
@@ -571,7 +563,7 @@
     markDirty();
   });
 
-  // 编辑器内：SKU / 门店 chip 切换，完成 / 取消，推送时机
+  // 编辑器内：SKU / 门店 chip 切换，完成 / 取消，启用开关
   document.addEventListener("click", function (e) {
     var partBtn = e.target.closest("button[data-part]");
     if (partBtn && draft) {
@@ -594,14 +586,6 @@
     }
     if (e.target.closest("#btnEditDone") && draft) { commitDraft(); return; }
     if (e.target.closest("#btnEditCancel") && draft) { cancelDraft(); return; }
-  });
-
-  document.addEventListener("change", function (e) {
-    if ((e.target.id === "edAvail" || e.target.id === "edUnavail") && draft) {
-      var ok = $("edAvail").checked || $("edUnavail").checked;
-      var hi = $("hintNotify");
-      if (hi) { hi.textContent = ok ? "" : "至少选择一个推送时机"; hi.className = ok ? "hint" : "hint warn"; }
-    }
   });
 
   loadAll();

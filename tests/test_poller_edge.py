@@ -88,7 +88,7 @@ class PollerEdgeTest(unittest.TestCase):
     def _target(self, tid, parts, stores, enabled=True, notify_on=None, push_mode="merged"):
         return {"id": tid, "name": tid, "bark_url": "https://bark/" + tid,
                 "enabled": enabled, "parts": parts, "stores": stores,
-                "notify_on": notify_on or ["available"], "push_mode": push_mode}
+                "notify_on": notify_on or ["available", "unavailable"], "push_mode": push_mode}
 
     def _run(self, cfg):
         return poller.run_once(cfg, SKU_META, self.profile,

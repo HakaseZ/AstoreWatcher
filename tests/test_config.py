@@ -101,15 +101,16 @@ class ValidateTest(unittest.TestCase):
         cfg = config.validate({"targets": [{"bark_url": "u", "parts": ["P1", "BAD"]}]})
         self.assertEqual(cfg["targets"][0]["parts"], ["P1", "BAD"])
 
-    def test_notify_on_normalized(self):
+    def test_notify_on_always_both(self):
+        # 库存翻转即推送，两个方向都推，不再让用户选择；任何输入都归一为两者
         cfg = config.validate({"targets": [
             {"bark_url": "u1", "notify_on": ["unavailable", "available", "bogus"]},
             {"bark_url": "u2", "notify_on": []},
             {"bark_url": "u3", "notify_on": "unavailable"},
+            {"bark_url": "u4"},
         ]})
-        self.assertEqual(cfg["targets"][0]["notify_on"], ["unavailable", "available"])
-        self.assertEqual(cfg["targets"][1]["notify_on"], ["available"])
-        self.assertEqual(cfg["targets"][2]["notify_on"], ["unavailable"])
+        for t in cfg["targets"]:
+            self.assertEqual(t["notify_on"], ["available", "unavailable"])
 
     def test_ids_generated_and_unique(self):
         cfg = config.validate({"targets": [

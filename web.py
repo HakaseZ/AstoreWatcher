@@ -163,7 +163,7 @@ class TargetIn(BaseModel):
     enabled: bool = True
     parts: list[str] = []
     stores: list[str] = []
-    notify_on: list[str] = ["available"]
+    notify_on: list[str] = ["available", "unavailable"]
     push_mode: str = DEFAULT_PUSH_MODE
 
 

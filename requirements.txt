@@ -1,0 +1,7 @@
+playwright==1.63.0
+# 钉死传递依赖的安全补丁版本（CVE-2025-62727：Starlette Range 头 DoS，影响 StaticFiles 文件服务）
+fastapi==0.141.1
+starlette==1.7.0
+uvicorn==0.54.0
+h11==0.16.0
+anyio==4.15.1

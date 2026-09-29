@@ -1,0 +1,611 @@
+<!DOCTYPE html>
+<html lang="zh-HK">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>AstoreWatcher 配置</title>
+<style>
+  :root {
+    --bg: #f5f5f7;
+    --card: #ffffff;
+    --line: #d8d8dd;
+    --text: #1d1d1f;
+    --muted: #6e6e73;
+    --accent: #0071e3;
+    --danger: #d70015;
+    --ok: #12864a;
+  }
+  * { box-sizing: border-box; }
+  body {
+    margin: 0; background: var(--bg); color: var(--text);
+    font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", "PingFang SC",
+                 "Hiragino Sans GB", "Microsoft YaHei", sans-serif;
+    font-size: 14px; line-height: 1.6;
+    padding-bottom: 24px;
+  }
+  header.topbar {
+    position: sticky; top: 0; z-index: 10;
+    display: flex; align-items: center; justify-content: space-between; gap: 12px;
+    padding: 12px 20px; background: rgba(255,255,255,.92);
+    border-bottom: 1px solid var(--line);
+  }
+  header.topbar h1 { font-size: 16px; margin: 0; font-weight: 600; }
+  .topbar-right { display: flex; align-items: center; gap: 10px; }
+  main { max-width: 960px; margin: 0 auto; padding: 16px 20px 0; }
+  .card {
+    background: var(--card); border: 1px solid var(--line); border-radius: 10px;
+    padding: 16px; margin-bottom: 16px;
+  }
+  .card h2 { font-size: 14px; margin: 0 0 12px; font-weight: 600; }
+  button {
+    font: inherit; padding: 5px 12px; border: 1px solid var(--line); border-radius: 6px;
+    background: #fff; color: var(--text); cursor: pointer;
+  }
+  button:hover { border-color: #999; }
+  button.primary { background: var(--accent); border-color: var(--accent); color: #fff; }
+  button.primary:hover { background: #0062c4; }
+  button.danger { color: var(--danger); }
+  input[type="text"], input[type="number"] {
+    font: inherit; padding: 6px 8px; border: 1px solid var(--line);
+    border-radius: 6px; background: #fff; color: var(--text); width: 100%;
+  }
+  .field { margin-bottom: 12px; }
+  .field > label { display: block; font-weight: 600; margin-bottom: 4px; }
+  select {
+    font: inherit; padding: 6px 8px; border: 1px solid var(--line);
+    border-radius: 6px; background: #fff; color: var(--text); max-width: 100%;
+  }
+  .row { display: flex; gap: 16px; flex-wrap: wrap; }
+  .row > .field { flex: 1 1 200px; }
+  .hint { color: var(--muted); font-size: 12px; }
+  .hint.warn { color: #b25000; }
+  .muted { color: var(--muted); }
+  .msg { margin: 0; padding: 10px 20px; font-size: 13px; }
+  .msg.ok { background: #e8f7ee; color: var(--ok); }
+  .msg.err { background: #fdecee; color: var(--danger); }
+  .msg.info { background: #eef3fb; color: #00409a; }
+  .msg.hidden { display: none; }
+  .tag { font-size: 12px; color: var(--muted); }
+  .tag.dirty { color: #b25000; font-weight: 600; }
+  .trow {
+    display: flex; gap: 12px; align-items: flex-start; justify-content: space-between;
+    border: 1px solid var(--line); border-radius: 8px; padding: 10px 12px; margin-bottom: 8px;
+  }
+  .trow.off { opacity: .55; }
+  .tname { font-weight: 600; }
+  .tmeta { color: var(--muted); font-size: 12px; word-break: break-all; }
+  .tactions { display: flex; align-items: center; gap: 6px; flex-wrap: wrap; }
+  .toolbar { display: flex; gap: 8px; align-items: center; flex-wrap: wrap; margin-bottom: 10px; }
+  .model-block { border-top: 1px solid var(--line); padding: 8px 0; }
+  .model-head { display: flex; align-items: center; justify-content: space-between; gap: 8px; }
+  .color-row { display: flex; gap: 10px; padding: 6px 0 6px 8px; align-items: baseline; flex-wrap: wrap; }
+  .color-name { flex: 0 0 110px; color: var(--muted); display: flex; align-items: center; }
+  .caps { display: flex; gap: 8px; flex-wrap: wrap; }
+  .chip {
+    border: 1px solid var(--line); border-radius: 999px; padding: 3px 12px;
+    font-size: 13px; cursor: pointer; user-select: none; background: #fff; color: var(--text);
+  }
+  .chip:hover { border-color: #999; }
+  .chip.on { background: #e8f1fd; border-color: var(--accent); color: var(--accent); font-weight: 600; }
+  .store-chips { display: flex; gap: 8px; flex-wrap: wrap; padding: 4px 0; }
+  .dot {
+    display: inline-block; width: 14px; height: 14px; border-radius: 50%;
+    vertical-align: -2px; margin-right: 6px; border: 1px solid rgba(0,0,0,.18);
+  }
+  /* 开关（替代 checkbox）：启用目标 / 行内启用 */
+  .switch { display: inline-flex; align-items: center; gap: 8px; cursor: pointer; user-select: none; }
+  .switch input { position: absolute; opacity: 0; width: 0; height: 0; }
+  .switch .slider {
+    position: relative; width: 40px; height: 22px; flex: 0 0 auto;
+    background: #d8d8dd; border-radius: 999px; transition: background .2s;
+  }
+  .switch .slider::before {
+    content: ""; position: absolute; left: 2px; top: 2px; width: 18px; height: 18px;
+    background: #fff; border-radius: 50%; transition: transform .2s; box-shadow: 0 1px 2px rgba(0,0,0,.3);
+  }
+  .switch input:checked + .slider { background: var(--accent); }
+  .switch input:checked + .slider::before { transform: translateX(18px); }
+  .switch .switch-label { font-weight: 600; }
+  .switch.switch-sm .slider { width: 34px; height: 20px; }
+  .switch.switch-sm .slider::before { width: 16px; height: 16px; }
+  .switch.switch-sm input:checked + .slider::before { transform: translateX(14px); }
+  /* 内联编辑器：嵌在目标行下方 / 列表末尾，用浅底与边框区分（无左侧色条） */
+  .editor-inline {
+    background: #fafafa; border: 1px solid var(--line);
+    border-radius: 8px; padding: 14px; margin: 0 0 12px;
+  }
+  .editor-inline h2 { font-size: 14px; margin: 0 0 12px; color: var(--accent); }
+  .req { color: var(--danger); }
+</style>
+</head>
+<body>
+
+<header class="topbar">
+  <h1>AstoreWatcher 配置</h1>
+  <div class="topbar-right">
+    <span id="dirtyTag" class="tag">已自动保存</span>
+    <button id="btnReload">重新加载</button>
+  </div>
+</header>
+
+<p id="msg" class="msg hidden"></p>
+
+<main>
+  <section class="card">
+    <h2>轮询设置</h2>
+    <div class="row">
+      <div class="field">
+        <label for="inpInterval">轮询间隔（秒）</label>
+        <input type="number" id="inpInterval" min="30" step="10">
+        <div class="hint" id="hintInterval"></div>
+      </div>
+    </div>
+  </section>
+
+  <section class="card">
+    <h2>推送目标</h2>
+    <div id="targetList"></div>
+    <div class="toolbar"><button id="btnAdd" class="primary">+ 新增目标</button></div>
+    <div class="hint">每个目标独立关注一套 SKU 与门店，可分别推到不同 Bark。「测试推送」发送当前已保存的配置。<br>
+      • <b>SKU 与门店都必填</b>。<br>
+      • 新目标首次推送一次全量；之后只在库存变动（补货 / 售完）时推送。<br>
+      • 禁用后再启用，会再推一次全量。</div>
+  </section>
+</main>
+
+<script>
+(function () {
+  "use strict";
+
+  var $ = function (id) { return document.getElementById(id); };
+  var MIN_INTERVAL = 30;
+
+  // Apple HK iPhone 18 Pro / Pro Max 的官方配色（近似色值，用于颜色圆点）
+  var COLOR_HEX = {
+    "布根地紅色": "#6e2b34",
+    "冰川色":   "#b9d9e6",
+    "銀色":     "#e3e4e1",
+    "黑色":     "#2a2a2e",
+  };
+
+  var state = null;        // 完整配置对象
+  var savedSnapshot = "";  // 上次已保存配置的序列化串，用于判断脏状态
+  var skus = [];           // /api/skus 返回的 SKU 列表
+  var stores = [];         // /api/stores 返回的门店名列表（中文）
+  var draft = null;        // 正在编辑的目标副本；id 为 null 表示新增未落位
+
+  // ------------------------------------------------------------ 工具
+
+  function esc(s) {
+    return String(s == null ? "" : s).replace(/[&<>"']/g, function (c) {
+      return { "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" }[c];
+    });
+  }
+
+  function dotHtml(color) {
+    var hex = COLOR_HEX[color] || "#cccccc";
+    return '<span class="dot" style="background:' + hex + '"></span>';
+  }
+
+  function showMsg(text, kind) {
+    var el = $("msg");
+    el.textContent = text;
+    el.className = "msg " + (kind || "info");
+    el.scrollIntoView({ block: "nearest" });
+  }
+
+  async function api(path, options) {
+    var opts = Object.assign({}, options || {});
+    if (opts.body !== undefined && opts.body !== null) {
+      opts.headers = Object.assign({ "Content-Type": "application/json" }, opts.headers || {});
+    }
+    var res;
+    try {
+      res = await fetch(path, opts);
+    } catch (e) {
+      throw new Error("网络请求失败：" + (e && e.message ? e.message : e));
+    }
+    var text = "";
+    try { text = await res.text(); } catch (e) { text = ""; }
+    var data = null;
+    if (text) {
+      try { data = JSON.parse(text); }
+      catch (e) { throw new Error("响应不是 JSON（HTTP " + res.status + "）：" + text.slice(0, 200)); }
+    }
+    if (!res.ok) {
+      var detail = data && data.detail !== undefined ? data.detail : text;
+      throw new Error(typeof detail === "string" ? detail : JSON.stringify(detail));
+    }
+    return data;
+  }
+
+  function pushModeLabel(t) {
+    return t.push_mode === "per_store" ? "按门店分条" : "汇总一条";
+  }
+
+  function markDirty() {
+    var el = $("dirtyTag");
+    if (draft) {
+      el.textContent = "编辑中（完成即保存）";
+      el.className = "tag dirty";
+    } else {
+      el.textContent = "已自动保存";
+      el.className = "tag";
+    }
+  }
+
+  function hasDraft() { return !!draft; }
+
+  // ------------------------------------------------------------ 加载
+
+  async function loadAll() {
+    try {
+      state = await api("/api/config");
+      draft = null;
+      renderAll();
+      savedSnapshot = JSON.stringify(state);
+      markDirty();
+      showMsg("配置已加载", "ok");
+    } catch (e) {
+      showMsg("加载配置失败：" + e.message, "err");
+      return;
+    }
+    try {
+      skus = await api("/api/skus");
+    } catch (e) {
+      skus = [];
+      showMsg("SKU 列表加载失败：" + e.message + "（目标已保存的 SKU 会原样保留）", "err");
+    }
+    try {
+      stores = await api("/api/stores");
+    } catch (e) {
+      stores = [];
+    }
+    if (draft) renderTargets();
+  }
+
+  // ------------------------------------------------------------ 渲染
+
+  function syncPoll() {
+    $("inpInterval").value = state.interval_sec;
+    checkPollHints();
+  }
+
+  function checkPollHints() {
+    var iv = Number($("inpInterval").value);
+    var hi = $("hintInterval");
+    if (iv < MIN_INTERVAL) {
+      hi.textContent = "低于 " + MIN_INTERVAL + " 秒，保存时会被夹到 " + MIN_INTERVAL + " 秒";
+      hi.className = "hint warn";
+    } else {
+      hi.textContent = "下限 " + MIN_INTERVAL + " 秒；每轮间隔会再加 0~10 秒随机抖动";
+      hi.className = "hint";
+    }
+  }
+
+  function storeChipsHtml(sel) {
+    if (!stores.length) return '<span class="muted">门店列表加载中…</span>';
+    return stores.map(function (s) {
+      var on = sel.indexOf(s) >= 0;
+      return '<button type="button" class="chip' + (on ? " on" : "") +
+             '" data-store="' + esc(s) + '">' + esc(s) + '</button>';
+    }).join("");
+  }
+
+  function skuTreeHtml() {
+    if (!skus.length) return '<p class="muted">SKU 列表加载中…</p>';
+    var list = skus;
+    var models = [];
+    var byModel = new Map();
+    list.forEach(function (s) {
+      if (!byModel.has(s.model)) { byModel.set(s.model, new Map()); models.push(s.model); }
+      var colors = byModel.get(s.model);
+      if (!colors.has(s.color)) colors.set(s.color, []);
+      colors.get(s.color).push(s);
+    });
+
+    return models.map(function (model) {
+      var colors = byModel.get(model);
+      var out = '<div class="model-block"><div class="model-head"><b>' + esc(model) + '</b></div>';
+      colors.forEach(function (items, color) {
+        out += '<div class="color-row"><span class="color-name">' + dotHtml(color) + esc(color) + '</span><div class="caps">';
+        out += items.map(function (s) {
+          var on = draft.parts.indexOf(s.part) >= 0;
+          return '<button type="button" class="chip' + (on ? " on" : "") +
+                 '" data-part="' + esc(s.part) + '" title="' + esc(s.model + " " + s.color + " " + s.capacity) + '">' +
+                 esc(s.capacity) + '</button>';
+        }).join("");
+        out += "</div></div>";
+      });
+      return out + "</div>";
+    }).join("");
+  }
+
+  function editorHtml() {
+    var t = draft;
+    return '' +
+      '<div class="editor-inline">' +
+        '<h2>' + (t.id ? "编辑目标" : "新增目标") + '</h2>' +
+        '<div class="row">' +
+          '<div class="field">' +
+            '<label for="edName">名称</label>' +
+            '<input type="text" id="edName" placeholder="例如：我的手机" value="' +
+              esc(t.name === "未命名目标" ? "" : t.name) + '">' +
+          '</div>' +
+          '<div class="field">' +
+            '<label for="edUrl">Bark 地址</label>' +
+            '<input type="text" id="edUrl" placeholder="https://api.day.app/你的KEY" value="' + esc(t.bark_url || "") + '">' +
+          '</div>' +
+        '</div>' +
+        '<div class="field">' +
+          '<label for="edMode">推送方式</label>' +
+          '<select id="edMode">' +
+            '<option value="merged"' + (t.push_mode !== "per_store" ? " selected" : "") + '>按型号汇总（多个型号各一条）</option>' +
+            '<option value="per_store"' + (t.push_mode === "per_store" ? " selected" : "") + '>按门店分条（每家一条）</option>' +
+          '</select>' +
+          '<div class="hint">一次检测到多家门店 / 多个型号时，决定每条推送合并到什么范围。</div>' +
+        '</div>' +
+        '<div class="field">' +
+          '<label>推送门店 <span class="req">*</span></label>' +
+          '<div class="store-chips" id="edStores">' + storeChipsHtml(t.stores || []) + '</div>' +
+          '<div class="hint">勾选要推送的门店；<b>至少选择一个</b>。</div>' +
+        '</div>' +
+        '<h2>关注 SKU <span class="req">*</span>（<span id="skuCount">' + t.parts.length + '</span> 个已选）</h2>' +
+        '<div class="hint" style="margin-bottom:6px">点击容量圆角标签选择；同型号多个颜色 / 容量可分别勾选。至少选择一个 SKU。</div>' +
+        '<div id="skuTree">' + skuTreeHtml() + '</div>' +
+        '<div class="toolbar" style="margin-top:12px">' +
+          '<button type="button" id="btnEditDone" class="primary">完成</button>' +
+          '<button type="button" id="btnEditCancel">取消</button>' +
+        '</div>' +
+      '</div>';
+  }
+
+  function renderTargets() {
+    var box = $("targetList");
+    if (!state.targets.length) {
+      box.innerHTML = '<p class="muted">还没有推送目标，点「+ 新增目标」添加一个。</p>';
+      if (draft && draft.id === null) box.innerHTML += editorHtml();
+      return;
+    }
+    var html = "";
+    state.targets.forEach(function (t) {
+      var missing = (!t.parts || !t.parts.length || !t.stores || !t.stores.length);
+      html += '<div class="trow' + (t.enabled ? "" : " off") + '">' +
+        '<div class="tinfo">' +
+          '<div class="tname">' + esc(t.name) + (t.enabled ? "" : ' <span class="muted">（已禁用）</span>') + '</div>' +
+          '<div class="tmeta">' + esc(t.bark_url || "（未填写 Bark 地址）") + '</div>' +
+          '<div class="tmeta">关注 SKU：<b>' + t.parts.length + '</b> 个　推送门店：' +
+            (t.stores && t.stores.length ? ('<b>' + t.stores.length + '</b> 家') : '<span class="req">未选</span>') +
+            '　库存变动即推送　推送方式：' + esc(pushModeLabel(t)) + '</div>' +
+        '</div>' +
+        '<div class="tactions">' +
+          '<label class="switch switch-sm"><input type="checkbox" data-act="toggle" data-id="' + esc(t.id) + '"' + (t.enabled ? " checked" : "") +
+            '><span class="slider"></span><span class="switch-label">启用</span></label>' +
+          '<button type="button" data-act="edit" data-id="' + esc(t.id) + '">编辑</button>' +
+          '<button type="button" data-act="test" data-id="' + esc(t.id) + '">测试推送</button>' +
+          '<button type="button" class="danger" data-act="del" data-id="' + esc(t.id) + '">删除</button>' +
+        '</div>' +
+      '</div>';
+      // 编辑中的目标：编辑器紧接在它下方行内展开
+      if (draft && draft.id === t.id) html += editorHtml();
+    });
+    // 新增目标：编辑器在列表末尾展开
+    if (draft && draft.id === null) html += editorHtml();
+    box.innerHTML = html;
+  }
+
+  function renderEditor() {
+    // 编辑器由 renderTargets 内联渲染，这里无需额外操作；但 edStores/edName 等
+    // 在 renderTargets 之后已是正确状态。仅占位，保持调用兼容。
+  }
+
+  function renderAll() {
+    syncPoll();
+    renderTargets();
+    markDirty();
+  }
+
+  // ------------------------------------------------------------ 保存 / 测试推送
+
+  // 自动保存整份配置（轮询间隔等整体项）。编辑草稿中不调用，避免覆盖未提交的目标。
+  // 不再有独立的「保存」按钮——任何改动即时落盘。
+  async function persistConfig() {
+    if (draft) return false;
+    if (state.interval_sec < MIN_INTERVAL) state.interval_sec = MIN_INTERVAL;
+    try {
+      state = await api("/api/config", { method: "PUT", body: JSON.stringify(state) });
+    } catch (e) {
+      showMsg("自动保存失败：" + e.message, "err");
+      return false;
+    }
+    savedSnapshot = JSON.stringify(state);
+    markDirty();
+    return true;
+  }
+
+  async function testTarget(id) {
+    showMsg("正在发送测试推送…", "info");
+    try {
+      var r = await api("/api/targets/" + encodeURIComponent(id) + "/test", { method: "POST" });
+      showMsg((r.ok ? "测试推送成功：" : "测试推送失败：") + r.detail, r.ok ? "ok" : "err");
+    } catch (e) {
+      showMsg("测试推送失败：" + e.message, "err");
+    }
+  }
+
+  // ------------------------------------------------------------ 编辑操作
+
+  function startEdit(id) {
+    if (id === null) {
+      draft = { id: null, name: "", bark_url: "", enabled: true,
+                parts: [], stores: [], notify_on: ["available"], push_mode: "merged" };
+    } else {
+      var t = state.targets.find(function (x) { return x.id === id; });
+      if (!t) { showMsg("找不到该目标", "err"); return; }
+      draft = JSON.parse(JSON.stringify(t));
+      if (!Array.isArray(draft.stores)) draft.stores = [];
+    }
+    renderTargets();
+    markDirty();
+    var card = document.querySelector(".editor-inline");
+    if (card) card.scrollIntoView({ block: "start", behavior: "smooth" });
+  }
+
+  async function commitDraft() {
+    var name = $("edName").value.trim();
+    var bark_url = $("edUrl").value.trim();
+    // 启用开关在卡片上；编辑面板不控制 enabled，沿用目标原有状态（新增默认启用）
+    var enabled = (draft.id === null) ? true
+      : (state.targets.find(function (t) { return t.id === draft.id; }) || {}).enabled;
+    var push_mode = $("edMode").value === "per_store" ? "per_store" : "merged";
+
+    if (!bark_url) {
+      showMsg("「" + (name || "未命名目标") + "」的 Bark 地址不能为空", "err");
+      $("edUrl").focus();
+      return;
+    }
+    if (!draft.parts.length) {
+      showMsg("「" + (name || "未命名目标") + "」至少选择一个 SKU（SKU 为必选）", "err");
+      return;
+    }
+    if (!draft.stores.length) {
+      showMsg("「" + (name || "未命名目标") + "」至少选择一个推送门店（门店为必选）", "err");
+      return;
+    }
+
+    var payload = {
+      name: name || "未命名目标",
+      bark_url: bark_url,
+      enabled: enabled,
+      parts: draft.parts,
+      stores: draft.stores,
+      notify_on: ["available", "unavailable"],  // 库存翻转即推送，两个方向都推
+      push_mode: push_mode,
+    };
+
+    var id = draft.id;
+    draft = null;  // 先收起草稿，再请求，避免并发渲染歧义
+    try {
+      var saved;
+      if (id === null) {
+        saved = await api("/api/targets", { method: "POST", body: JSON.stringify(payload) });
+        state.targets.push(saved);
+      } else {
+        saved = await api("/api/targets/" + encodeURIComponent(id),
+                          { method: "PUT", body: JSON.stringify(payload) });
+        state.targets = state.targets.map(function (t) { return t.id === id ? saved : t; });
+      }
+    } catch (e) {
+      showMsg("保存失败：" + e.message, "err");
+      return;
+    }
+    savedSnapshot = JSON.stringify(state);
+    renderAll();
+    showMsg("已保存", "ok");
+  }
+
+  function cancelDraft() {
+    draft = null;
+    renderTargets();
+    markDirty();
+  }
+
+  // ------------------------------------------------------------ 事件绑定（委托）
+
+  var intervalTimer = null;
+  $("inpInterval").addEventListener("input", function () {
+    var v = Number(this.value);
+    state.interval_sec = isNaN(v) ? 0 : v;
+    checkPollHints();
+    markDirty();
+    if (intervalTimer) clearTimeout(intervalTimer);
+    intervalTimer = setTimeout(persistConfig, 600);  // 改好即保存
+  });
+
+  $("btnAdd").addEventListener("click", function () { startEdit(null); });
+  $("btnReload").addEventListener("click", function () {
+    if (draft && !confirm("有未完成的编辑，确定重新加载并丢弃？")) return;
+    loadAll();
+  });
+
+  // 目标行的点击（编辑 / 测试 / 删除）
+  $("targetList").addEventListener("click", function (e) {
+    var btn = e.target.closest("button[data-act]");
+    if (!btn) return;
+    var id = btn.getAttribute("data-id");
+    var act = btn.getAttribute("data-act");
+    if (act === "edit") startEdit(id);
+    else if (act === "test") testTarget(id);
+    else if (act === "del") {
+      var t = state.targets.find(function (x) { return x.id === id; });
+      if (!t) return;
+      if (!confirm("确定删除目标「" + t.name + "」？")) return;
+      if (draft && draft.id === id) draft = null;
+      state.targets = state.targets.filter(function (x) { return x.id !== id; });
+      renderTargets();
+      markDirty();
+      api("/api/targets/" + encodeURIComponent(id), { method: "DELETE" })
+        .then(function () {
+          savedSnapshot = JSON.stringify(state);
+          showMsg("已删除并保存", "ok");
+        })
+        .catch(function (err) {
+          showMsg("删除保存失败：" + (err && err.message ? err.message : err), "err");
+        });
+    }
+  });
+
+  // 卡片上的启用开关：拨一下立即持久化（改好即保存），无需再点任何保存按钮
+  $("targetList").addEventListener("change", function (e) {
+    var box = e.target.closest('input[data-act="toggle"]');
+    if (!box) return;
+    var id = box.getAttribute("data-id");
+    var t = state.targets.find(function (x) { return x.id === id; });
+    if (!t) return;
+    t.enabled = box.checked;
+    renderTargets();
+    markDirty();
+    api("/api/targets/" + encodeURIComponent(id),
+        { method: "PUT", body: JSON.stringify(t) })
+      .then(function () {
+        savedSnapshot = JSON.stringify(state);
+        showMsg(t.enabled ? "已启用并立即生效" : "已禁用并立即生效", "ok");
+      })
+      .catch(function (err) {
+        t.enabled = !box.checked;
+        box.checked = t.enabled;
+        renderTargets();
+        showMsg("开关保存失败：" + (err && err.message ? err.message : err), "err");
+      });
+  });
+
+  // 编辑器内：SKU / 门店 chip 切换，完成 / 取消
+  document.addEventListener("click", function (e) {
+    var partBtn = e.target.closest("button[data-part]");
+    if (partBtn && draft) {
+      var part = partBtn.getAttribute("data-part");
+      var i = draft.parts.indexOf(part);
+      if (i < 0) draft.parts.push(part); else draft.parts.splice(i, 1);
+      partBtn.className = draft.parts.indexOf(part) >= 0 ? "chip on" : "chip";
+      var c = $("skuCount"); if (c) c.textContent = draft.parts.length;
+      markDirty();
+      return;
+    }
+    var storeBtn = e.target.closest("button[data-store]");
+    if (storeBtn && draft) {
+      var s = storeBtn.getAttribute("data-store");
+      var j = draft.stores.indexOf(s);
+      if (j < 0) draft.stores.push(s); else draft.stores.splice(j, 1);
+      storeBtn.className = draft.stores.indexOf(s) >= 0 ? "chip on" : "chip";
+      markDirty();
+      return;
+    }
+    if (e.target.closest("#btnEditDone") && draft) { commitDraft(); return; }
+    if (e.target.closest("#btnEditCancel") && draft) { cancelDraft(); return; }
+  });
+
+  loadAll();
+})();
+</script>
+</body>
+</html>

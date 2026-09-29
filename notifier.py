@@ -14,8 +14,10 @@ import config as config_mod
 
 BARK_TIMEOUT = 10
 
-# 所有推送统一带的 Apple 图标（Bark icon 参数，iOS 15+）
-APPLE_ICON = "https://www.apple.com/favicon.ico"
+# 所有推送统一带的 Apple 图标（Bark icon 参数，iOS 15+）。
+# 必须用 PNG/JPG：Apple 主页 favicon.ico 是 image/x-icon，iOS 通知不渲染 .ico，
+# 故改用 Apple 自家的 apple-touch-icon.png（180x180 PNG）。
+APPLE_ICON = "https://www.apple.com/apple-touch-icon.png"
 # 目标未填 order_url 时的兜底跳转地址（点横幅落地页）
 APPLE_HOME = "https://www.apple.com"
 

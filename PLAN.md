@@ -120,12 +120,27 @@ headless 即可 200**。识别根源是 Chromium 构建的 `Sec-CH-UA` 自报 "C
 
 ### M1 — 最小可用镜像
 
+**✅ 已完成（2026-09-29）**
+
 ```
-Dockerfile              # FROM mcr.microsoft.com/playwright/python:<钉死 tag>，不用 latest
-docker-compose.yml      # restart: unless-stopped，./data 挂为 volume
-requirements.txt
+Dockerfile              # FROM python:3.13-slim + apt chromium + pip playwright → 978MB
+docker-compose.yml      # shm_size 2gb、./data 挂 profile、LOCATION/TZ 环境变量
+requirements.txt        # playwright==1.63.0
 main.py                 # 加载 skus_hk.json → 3 批查询 → 打印结果后退出
 ```
+
+**实测结果**：`docker compose run --rm watcher` → 32 个 SKU × 6 家门店全部取到，
+其中 7 个 SKU 显示可取貨（如 iPhone 18 Pro 2TB 黑色六店全有货）。
+
+**构建/运行的两个坑（已处理）**
+1. **基底怎么来的**：本机 docker.io 直连与公共加速站全不可用；
+   经 `public.ecr.aws/docker/library/python:3.13-slim` 拉取后本地打 tag，
+   Dockerfile 里仍写 `FROM python:3.13-slim`，可移植性不受影响。
+2. **冷启动 541 会污染 profile**：新 profile 首次被判机器人后，该 profile 会**持续** 541。
+   main.py 的处理：先 reheat（重开购买页重试）→ 仍全批失败则 `rmtree` 掉 profile 重建再跑一轮（实测有效）。
+
+镜像体积 978MB（spike 镜像 2.76GB），主要来自 chromium 本体。
+`restart: "no"`（M1 单次运行），M2 改常驻轮询时切 `unless-stopped`。
 
 ### M2 — 轮询 + 通知
 

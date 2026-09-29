@@ -1,0 +1,17 @@
+services:
+  watcher:
+    build: .
+    image: astore-watcher:latest
+    container_name: astore-watcher
+    # M1 为单次运行；M2 改为常驻轮询时切回 unless-stopped
+    restart: "no"
+    # Chromium 默认 /dev/shm 只有 64MB，不加会随机崩溃
+    shm_size: "2gb"
+    volumes:
+      # 浏览器 profile：shield cookie 持久化，重启后不必重新过校验
+      - ./data:/data
+    environment:
+      LOCATION: "中環"
+      TZ: Asia/Hong_Kong
+      # M2 接入 Bark 通知后打开：
+      # BARK_KEY: ""

@@ -25,16 +25,43 @@ DEFAULT_INTERVAL_SEC = 120
 # 抖动是代码内固定的随机值，不暴露给用户配置。
 RANDOM_JITTER_MAX = 10
 
-# 香港 6 家 Apple Store 中文店名（取自 Apple HK 库存接口的 storeName 字段）。
-# 仅作「推送门店」选项的兜底；轮询发现真实店名后会以发现到的为准。
+# 香港 6 家 Apple Store 官方中文店名（取自 Apple HK 官网）。
+# 轮询时 Apple 库存接口返回的 storeName 是**英文 slug**，仅用作内部与接口数据对齐的键；
+# 用户可见处（界面「推送门店」选项、Bark 推送文案）一律用下表的中文名。
 HK_STORES = [
     "Apple 中環",
+    "Apple 廣東道",
     "Apple 銅鑼灣",
-    "Apple 灣仔",
     "Apple 九龍塘",
-    "Apple 西九龍",
     "Apple 觀塘",
+    "Apple 沙田",
 ]
+
+# Apple HK 库存接口返回的英文 slug → 官方中文店名（唯一映射源）。
+STORE_DISPLAY = {
+    "ifc mall": "Apple 中環",
+    "Canton Road": "Apple 廣東道",
+    "Causeway Bay": "Apple 銅鑼灣",
+    "Festival Walk": "Apple 九龍塘",
+    "apm Hong Kong": "Apple 觀塘",
+    "New Town Plaza": "Apple 沙田",
+}
+# 反向：中文店名 → 英文 slug（用于把界面勾选的中文归一到接口键）
+STORE_BY_ZH = {zh: en for en, zh in STORE_DISPLAY.items()}
+
+
+def to_display(name):
+    """门店名 → 展示用中文名。已是中文 / 未收录则原样返回。"""
+    if not isinstance(name, str):
+        return name
+    return STORE_DISPLAY.get(name, name)
+
+
+def to_key(name):
+    """门店名 → 与 Apple 接口数据对齐的英文 slug。已是英文 / 未收录则原样返回。"""
+    if not isinstance(name, str):
+        return name
+    return STORE_BY_ZH.get(name, name)
 
 # 合法的通知时机；顺序即规范化后的输出顺序
 VALID_NOTIFY_ON = ("available", "unavailable")

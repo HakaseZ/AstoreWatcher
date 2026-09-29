@@ -10,6 +10,8 @@ import json
 import urllib.error
 import urllib.request
 
+import config as config_mod
+
 BARK_TIMEOUT = 10
 
 # 一条推送里最多列出多少条变化，超出的末尾补「等 N 條」
@@ -76,7 +78,7 @@ def format_change(change, sku_meta):
     title = f"您关注的 {label} 监测到库存变化"
     if not quote:
         quote = "可取貨" if to == "available" else "暫無供應"
-    body = f"門店：{store}\n狀態：{quote}"
+    body = f"門店：{config_mod.to_display(store)}\n狀態：{quote}"
     return title, body
 
 
@@ -92,7 +94,7 @@ def _change_line(change, sku_meta):
     quote = change.get("quote") or ""
     if not quote:
         quote = "可取貨" if to == "available" else "暫無供應"
-    return f"{_sku_label(change.get('part'), sku_meta)}\n門店：{store}\n狀態：{quote}"
+    return f"{_sku_label(change.get('part'), sku_meta)}\n門店：{config_mod.to_display(store)}\n狀態：{quote}"
 
 
 def _merged_messages(changes, sku_meta):
@@ -142,7 +144,7 @@ def _per_store_messages(changes, sku_meta):
     for store in order:
         items = by_store[store]
         # 该店只要有任意一个 SKU 有货，标题就算「有貨了」
-        title = f"{store} 有貨了" if any(c.get("to") == "available" for c in items) else f"{store} 無貨了"
+        title = f"{config_mod.to_display(store)} 有貨了" if any(c.get("to") == "available" for c in items) else f"{config_mod.to_display(store)} 無貨了"
         lines = []
         for c in items:
             label = _sku_label(c.get("part") or "", sku_meta)
@@ -180,9 +182,10 @@ def format_snapshot(snapshot, parts, sku_meta, stores=None):
     else:
         part_keys = list(snapshot.keys())
 
-    # 只保留目标勾选的门店；留空表示全部门店
+    # 只保留目标勾选的门店；留空表示全部门店。目标里存的是中文店名，
+    # 需归一到 Apple 接口返回的英文 slug 才能对上 snapshot 的键。
     if stores:
-        wanted = set(stores)
+        wanted = {config_mod.to_key(s) for s in stores}
         snapshot = {p: {s: e for s, e in (snapshot.get(p) or {}).items() if s in wanted}
                     for p in part_keys}
         part_keys = [p for p in part_keys if snapshot.get(p)]
@@ -199,7 +202,7 @@ def format_snapshot(snapshot, parts, sku_meta, stores=None):
         for store, entry in store_map.items():
             display = entry.get("display") if isinstance(entry, dict) else entry
             if display == "available":
-                available.append(store)
+                available.append(config_mod.to_display(store))
 
         total = len(store_map)
         label = _sku_label(part, sku_meta)
@@ -238,8 +241,8 @@ def push_target(target, changes, sku_meta):
     wanted = set(parts)
     changes = [c for c in changes if c.get("part") in wanted]
 
-    # 只推该目标勾选的门店
-    wanted_stores = set(stores)
+    # 只推该目标勾选的门店（目标里存中文店名，归一到英文 slug 再匹配）
+    wanted_stores = {config_mod.to_key(s) for s in stores}
     changes = [c for c in changes if c.get("store") in wanted_stores]
 
     if not changes:

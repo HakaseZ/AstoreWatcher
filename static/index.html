@@ -323,6 +323,14 @@
 
   function editorHtml() {
     var t = draft;
+    // 新增目标默认启用，不显示开关；只有编辑已有目标时才需要开关（可禁用）
+    var enabledField = t.id ? (
+      '<div class="field">' +
+        '<label class="switch"><input type="checkbox" id="edEnabled"' + (t.enabled ? " checked" : "") +
+          '><span class="slider"></span><span class="switch-label">启用这个目标</span></label>' +
+        '<div class="hint">关闭后该目标停止推送；重新启用会再次推送一次全量状态。</div>' +
+      '</div>'
+    ) : '';
     return '' +
       '<div class="editor-inline">' +
         '<h2>' + (t.id ? "编辑目标" : "新增目标") + '</h2>' +
@@ -337,11 +345,7 @@
             '<input type="text" id="edUrl" placeholder="https://api.day.app/你的KEY" value="' + esc(t.bark_url || "") + '">' +
           '</div>' +
         '</div>' +
-        '<div class="field">' +
-          '<label class="switch"><input type="checkbox" id="edEnabled"' + (t.enabled ? " checked" : "") +
-            '><span class="slider"></span><span class="switch-label">启用这个目标</span></label>' +
-          '<div class="hint">关闭后该目标停止推送；重新启用会再次推送一次全量状态。</div>' +
-        '</div>' +
+        enabledField +
         '<div class="field">' +
           '<label for="edMode">推送方式</label>' +
           '<select id="edMode">' +
@@ -483,7 +487,8 @@
     var name = $("edName").value.trim();
     draft.name = name || "未命名目标";
     draft.bark_url = $("edUrl").value.trim();
-    draft.enabled = $("edEnabled").checked;
+    // 新增目标不渲染开关，默认启用；编辑已有目标时才读取开关
+    draft.enabled = $("edEnabled") ? $("edEnabled").checked : true;
     draft.notify_on = ["available", "unavailable"];  // 库存翻转即推送，两个方向都推
     draft.push_mode = $("edMode").value === "per_store" ? "per_store" : "merged";
 

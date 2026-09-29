@@ -30,6 +30,7 @@ from datetime import datetime, timedelta, timezone
 
 import config as config_mod
 import state as state_mod
+import notifier
 from fastapi import Body, FastAPI, HTTPException
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel
@@ -164,6 +165,45 @@ def commit(data: dict) -> dict:
     return saved
 
 
+def push_cached_first_full(target: dict) -> dict:
+    """重新启用 / 新建目标时，立即用上一轮缓存快照（data/state.json）推一条全量，
+    不等待 Watcher 跑浏览器周期（≈2s，类比测试推送）。推成功才写首推标记，
+    避免 Watcher 下一轮再推一次造成重复；若缓存为空 / 推送失败则不标记，
+    交由 Watcher 在下一轮补推。
+    """
+    state_path = os.path.join(os.path.dirname(os.path.abspath(config_path())), "state.json")
+    try:
+        with open(state_path, encoding="utf-8") as f:
+            snapshot = json.load(f)
+    except (OSError, ValueError):
+        return {"ok": False, "detail": "尚无缓存快照，等下一轮轮询再推"}
+    if not isinstance(snapshot, dict) or not snapshot:
+        return {"ok": False, "detail": "缓存快照为空，等下一轮轮询再推"}
+
+    sku_meta = {s["part"]: s for s in load_skus() if isinstance(s, dict) and s.get("part")}
+    title, body = notifier.format_snapshot(
+        snapshot, target.get("parts") or [], sku_meta, target.get("stores") or [])
+    ok, detail = bark_post(target.get("bark_url", ""), title, body)
+    if not ok:
+        return {"ok": False, "detail": detail}
+
+    # 推成功 → 写首推标记，让 Watcher 不再重复推全量
+    init_path = os.path.join(os.path.dirname(os.path.abspath(config_path())), "init.json")
+    try:
+        inited = state_mod.load_init(init_path)
+    except OSError:
+        inited = {}
+    inited[target["id"]] = {
+        "since": datetime.now(HK_TZ).strftime("%Y-%m-%dT%H:%M:%S"),
+        "parts": list(target.get("parts") or []),
+    }
+    try:
+        state_mod.save_init(init_path, inited)
+    except OSError:
+        pass
+    return {"ok": True, "detail": detail}
+
+
 # ---------------------------------------------------------------- 请求模型
 
 class TargetIn(BaseModel):
@@ -294,13 +334,19 @@ def api_create_target(body: TargetIn) -> dict:
     saved = commit(data)
     # 原有目标的 id 不会变，所以多出来的那个就是新建的
     fresh = [t for t in saved["targets"] if t["id"] not in known_ids]
-    return fresh[0]
+    new_t = fresh[0]
+    # 新建即启用：用上一轮缓存快照立即推全量（≈2s，不待 Watcher 跑浏览器）
+    if new_t.get("enabled", True):
+        push_cached_first_full(new_t)
+    return new_t
 
 
 @app.put("/api/targets/{target_id}")
 def api_update_target(target_id: str, body: TargetIn) -> dict:
     """更新指定目标（保留原 id）。"""
     config = read_config()
+    old = next((t for t in config["targets"] if t["id"] == target_id), None)
+    old_enabled = bool(old.get("enabled", True)) if old else True
     index = next((i for i, t in enumerate(config["targets"]) if t["id"] == target_id), None)
     if index is None:
         raise HTTPException(status_code=404, detail=f"找不到目标 {target_id}")
@@ -310,7 +356,11 @@ def api_update_target(target_id: str, body: TargetIn) -> dict:
     targets[index] = dict(body.model_dump(), id=target_id)
     data["targets"] = targets
     saved = commit(data)
-    return next(t for t in saved["targets"] if t["id"] == target_id)
+    updated = next(t for t in saved["targets"] if t["id"] == target_id)
+    # 重新启用（之前禁用）：用上一轮缓存快照立即推全量，不等 Watcher 跑浏览器
+    if (not old_enabled) and body.enabled:
+        push_cached_first_full(updated)
+    return updated
 
 
 @app.delete("/api/targets/{target_id}")

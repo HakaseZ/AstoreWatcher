@@ -86,6 +86,30 @@ def save_init(path, mapping):
     save(path, mapping if isinstance(mapping, dict) else {})
 
 
+def prune_init(path, cfg):
+    """摘除所有未启用 / 已删除目标的首推标记。
+
+    首推标记在 Watcher 首次全量推送后写入；重新启用目标时要再推一次全量，标记必须在
+    禁用发生的这一刻就清掉（后端收得到禁用请求），否则若 Watcher 没在禁用期间跑过一轮，
+    标记残留，重新启用会被误判为已初始化而不再推全量。
+    """
+    try:
+        inited = load_init(path)
+    except OSError:
+        return
+    enabled_ids = {t.get("id") for t in (cfg.get("targets") or []) if t.get("enabled", True)}
+    changed = False
+    for tid in list(inited):
+        if tid not in enabled_ids:
+            inited.pop(tid, None)
+            changed = True
+    if changed:
+        try:
+            save_init(path, inited)
+        except OSError:
+            pass
+
+
 def _display_of(entry):
     """从 snapshot 的单条目里取出 (display, quote)；结构异常返回 None。"""
     if isinstance(entry, dict):

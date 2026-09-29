@@ -29,6 +29,7 @@ import urllib.request
 from datetime import datetime, timedelta, timezone
 
 import config as config_mod
+import state as state_mod
 from fastapi import Body, FastAPI, HTTPException
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel
@@ -148,11 +149,19 @@ def write_config(data: dict) -> dict:
 def commit(data: dict) -> dict:
     """写盘并把异常翻译成 HTTP 状态码：校验类 400，写入失败 500。"""
     try:
-        return write_config(data)
+        saved = write_config(data)
     except ValueError as exc:
         raise HTTPException(status_code=400, detail=str(exc))
     except OSError as exc:
         raise HTTPException(status_code=500, detail=f"写入 config.json 失败：{exc}")
+    # 禁用 / 删除的目标立即摘除首推标记，确保重新启用能再推一次全量——
+    # 不依赖 Watcher 恰好在禁用期间跑过一轮（否则秒级停用再启用会漏推全量）。
+    # 标记归属由 state 模块统一管理。
+    state_mod.prune_init(
+        os.path.join(os.path.dirname(os.path.abspath(config_path())), "init.json"),
+        saved,
+    )
+    return saved
 
 
 # ---------------------------------------------------------------- 请求模型

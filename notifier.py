@@ -236,6 +236,28 @@ def format_snapshot(snapshot, parts, sku_meta, stores=None):
     return title, "\n".join(lines)
 
 
+def snapshot_has_available(snapshot, parts, stores=None):
+    """判断全量快照里、目标关注的 parts/stores 范围内是否有任意「有货」门店。
+
+    用于首推（首次全量 / 重新启用）决定是否带下单链接：全无货时不应带，
+    与变动推送「有货才带链接」的规则保持一致。
+    """
+    snapshot = snapshot if isinstance(snapshot, dict) else {}
+    part_keys = [p for p in parts if p in snapshot] if parts else list(snapshot)
+    wanted = {config_mod.to_key(s) for s in stores} if stores else None
+    for part in part_keys:
+        store_map = snapshot.get(part)
+        if not isinstance(store_map, dict):
+            continue
+        for store, entry in store_map.items():
+            if wanted is not None and store not in wanted:
+                continue
+            display = entry.get("display") if isinstance(entry, dict) else entry
+            if display == "available":
+                return True
+    return False
+
+
 def push_target(target, changes, sku_meta):
     """给一个目标推送一组变化，返回每条推送的 (ok, detail)。
 

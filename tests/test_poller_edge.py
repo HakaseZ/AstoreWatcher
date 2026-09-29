@@ -77,7 +77,14 @@ class PollerEdgeTest(unittest.TestCase):
         _AVAIL.clear()
         _AVAIL[("P1", "S0")] = "available"  # 初始：P1 在 S0 有货
         self.captured = []
-        notifier.send = lambda bark_url, title, body, **kw: (self.captured.append((bark_url, title, body)) or (True, "ok"))
+        self.captured_kw = []
+
+        def _send(bark_url, title, body, **kw):
+            self.captured.append((bark_url, title, body))
+            self.captured_kw.append(kw)
+            return (True, "ok")
+
+        notifier.send = _send
 
     def tearDown(self):
         self.tmp.cleanup()
@@ -164,6 +171,23 @@ class PollerEdgeTest(unittest.TestCase):
         self.assertIn("https://bark/t_valid", urls)
         self.assertNotIn("https://bark/t_empty_parts", urls)
         self.assertNotIn("https://bark/t_empty_stores", urls)
+
+    # ---- 首推全量：有货才带下单链接（与变动推送一致）----
+    def test_first_full_all_unavailable_has_no_url(self):
+        t = self._target("t1", ["P1"], ["S0"])
+        _AVAIL[("P1", "S0")] = "unavailable"  # 全无货
+        self._run(self._cfg([t]))
+        self.assertEqual(len(self.captured), 1)
+        # 全无货：首推不应带下单链接（url 为 None，而非缺省主页）
+        self.assertIsNone(self.captured_kw[0].get("url"))
+
+    def test_first_full_with_available_has_url(self):
+        # setUp 已置 P1/S0 有货
+        t = self._target("t2", ["P1"], ["S0"])
+        self._run(self._cfg([t]))
+        self.assertEqual(len(self.captured), 1)
+        self.assertIn("url", self.captured_kw[0])
+        self.assertEqual(self.captured_kw[0]["url"], notifier.APPLE_HOME)
 
     # ---- 5b. 首轮空快照护栏：未匹配到任何 SKU 不推送、不写 init，下轮重试 ----
     def test_first_full_empty_snapshot_no_push_no_init(self):

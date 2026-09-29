@@ -187,7 +187,11 @@ def push_cached_first_full(target: dict) -> dict:
         target.get("bark_url", ""),
         title, body,
         icon=notifier.APPLE_ICON,
-        link=target.get("order_url") or notifier.APPLE_HOME,
+        # 首推全量：仅当所选范围有货才带下单链接，全无货则不带（与变动推送一致）
+        link=((target.get("order_url") or notifier.APPLE_HOME)
+              if notifier.snapshot_has_available(
+                  snapshot, target.get("parts") or [], target.get("stores") or [])
+              else None),
     )
     if not ok:
         return {"ok": False, "detail": detail}

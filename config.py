@@ -163,6 +163,10 @@ def _normalize_targets(raw, valid_parts):
                 seen_stores.add(s)
                 ordered_stores.append(s)
 
+        # 下单页链接（可选）：点通知横幅跳转；留空则由 notifier 回退 Apple 主页
+        order_url = item.get("order_url")
+        order_url = order_url.strip() if isinstance(order_url, str) else ""
+
         name = item.get("name")
         targets.append({
             "id": tid,
@@ -171,6 +175,7 @@ def _normalize_targets(raw, valid_parts):
             "enabled": bool(item.get("enabled", True)),
             "parts": ordered_parts,
             "stores": ordered_stores,
+            "order_url": order_url,
             "notify_on": _normalize_notify_on(item.get("notify_on")),
             "push_mode": _normalize_push_mode(item.get("push_mode")),
         })

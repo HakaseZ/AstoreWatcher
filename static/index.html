@@ -338,6 +338,11 @@
           '</div>' +
         '</div>' +
         '<div class="field">' +
+          '<label for="edOrderUrl">下单页链接（可选）</label>' +
+          '<input type="text" id="edOrderUrl" placeholder="留空则点击通知跳转到 Apple 主页" value="' + esc(t.order_url || "") + '">' +
+          '<div class="hint">无货变有货时，点通知横幅直接打开此链接去下单。可填具体产品页，例如 https://www.apple.com/hk-zh/shop/buy-iphone/iphone-18-pro</div>' +
+        '</div>' +
+        '<div class="field">' +
           '<label for="edMode">推送方式</label>' +
           '<select id="edMode">' +
             '<option value="merged"' + (t.push_mode !== "per_store" ? " selected" : "") + '>按型号汇总（多个型号各一条）</option>' +
@@ -438,7 +443,7 @@
   function startEdit(id) {
     if (id === null) {
       draft = { id: null, name: "", bark_url: "", enabled: true,
-                parts: [], stores: [], notify_on: ["available"], push_mode: "merged" };
+                parts: [], stores: [], order_url: "", notify_on: ["available"], push_mode: "merged" };
     } else {
       var t = state.targets.find(function (x) { return x.id === id; });
       if (!t) { showMsg("找不到该目标", "err"); return; }
@@ -454,6 +459,7 @@
   async function commitDraft() {
     var name = $("edName").value.trim();
     var bark_url = $("edUrl").value.trim();
+    var order_url = $("edOrderUrl").value.trim();
     // 启用开关在卡片上；编辑面板不控制 enabled，沿用目标原有状态（新增默认启用）
     var enabled = (draft.id === null) ? true
       : (state.targets.find(function (t) { return t.id === draft.id; }) || {}).enabled;
@@ -479,6 +485,7 @@
       enabled: enabled,
       parts: draft.parts,
       stores: draft.stores,
+      order_url: order_url,
       notify_on: ["available", "unavailable"],  // 库存翻转即推送，两个方向都推
       push_mode: push_mode,
     };

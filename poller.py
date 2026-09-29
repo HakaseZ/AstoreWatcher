@@ -157,7 +157,14 @@ def run_once(cfg, sku_meta, profile, state_path, init_path, executable=None):
                             "暂不推送，下轮重试", t.get("name") or tid)
                 continue
             title, body = notifier.format_snapshot(snapshot, parts, sku_meta, stores)
-            ok, detail = notifier.send(t.get("bark_url"), title, body)
+            # 首推全量：仅当所选范围内有货才带下单链接，全无货则不带（与变动推送一致）
+            first_url = (t.get("order_url") or notifier.APPLE_HOME) \
+                if notifier.snapshot_has_available(snapshot, parts, stores) else None
+            ok, detail = notifier.send(
+                t.get("bark_url"), title, body,
+                icon=notifier.APPLE_ICON,
+                url=first_url,
+            )
             log.info("目标「%s」首次全量推送：%s", t.get("name") or tid, "成功" if ok else f"失败 {detail}")
             if ok:  # 失败则不落标记，下一轮重试全量推送
                 to_add[tid] = {"since": now, "parts": list(parts)}

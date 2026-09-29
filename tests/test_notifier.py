@@ -67,6 +67,18 @@ class SendTest(unittest.TestCase):
         self.assertEqual(payload["level"], "timeSensitive")
         self.assertEqual(payload["isArchive"], 1)
 
+    def test_url_included_when_given(self):
+        with mock.patch("urllib.request.urlopen", return_value=fake_response()) as m:
+            notifier.send("https://x", "t", "b", url="https://example.com/order")
+        _, payload = sent_payload(m)
+        self.assertEqual(payload["url"], "https://example.com/order")
+
+    def test_url_omitted_when_empty(self):
+        with mock.patch("urllib.request.urlopen", return_value=fake_response()) as m:
+            notifier.send("https://x", "t", "b", url="")
+        _, payload = sent_payload(m)
+        self.assertNotIn("url", payload)
+
     def test_is_archive_false_still_sent(self):
         with mock.patch("urllib.request.urlopen", return_value=fake_response()) as m:
             notifier.send("https://x", "t", "b", is_archive=False)
@@ -220,11 +232,13 @@ class BuildMessagesTest(unittest.TestCase):
     def test_default_is_merged_single_message(self):
         msgs = notifier.build_messages({"push_mode": "merged"}, self._changes(), SKU_META)
         self.assertEqual(len(msgs), 1)
-        title, body = msgs[0]
+        title, body, url = msgs[0]
         # 单 SKU 变动 → 标题用完整型号（型号+颜色+容量）
         self.assertEqual(title, "您关注的 iPhone 18 Pro Max 512GB 布根地紅色 监测到库存变化")
         self.assertIn("Apple 中環", body)
         self.assertIn("Apple 廣東道", body)
+        # 含「有货」变动 → 回退 Apple 主页
+        self.assertEqual(url, notifier.APPLE_HOME)
 
     def test_merged_splits_by_model(self):
         meta = {
@@ -237,7 +251,7 @@ class BuildMessagesTest(unittest.TestCase):
         ]
         msgs = notifier.build_messages({"push_mode": "merged"}, changes, meta)
         self.assertEqual(len(msgs), 2)  # 两个型号 → 两条推送
-        titles = sorted(t for t, _ in msgs)
+        titles = sorted(t for t, _, _ in msgs)
         # 单 SKU 变动的型号用完整型号标题；另一个型号同理
         self.assertEqual(titles, sorted([
             "您关注的 iPhone 18 Pro 256GB 黑色 监测到库存变化",
@@ -271,7 +285,7 @@ class BuildMessagesTest(unittest.TestCase):
     def test_per_store_splits_by_store(self):
         msgs = notifier.build_messages({"push_mode": "per_store"}, self._changes(), SKU_META)
         self.assertEqual(len(msgs), 2)
-        titles = [t for t, _ in msgs]
+        titles = [t for t, _, _ in msgs]
         self.assertEqual(titles[0], "Apple 中環 有貨了")
         self.assertEqual(titles[1], "Apple 廣東道 無貨了")
         self.assertIn("iPhone 18 Pro Max 512GB 布根地紅色：備妥於： 今日", msgs[0][1])
@@ -279,6 +293,28 @@ class BuildMessagesTest(unittest.TestCase):
         # 每条只含自己门店的内容
         self.assertNotIn("Apple 廣東道", msgs[0][1])
         self.assertNotIn("Apple 中環", msgs[1][1])
+        # 有货的门店才带 url，无货的不带
+        self.assertEqual(msgs[0][2], notifier.APPLE_HOME)
+        self.assertIsNone(msgs[1][2])
+
+    def test_url_uses_target_order_url_when_available(self):
+        target = {"push_mode": "merged", "order_url": "https://buy.example.com/iphone"}
+        msgs = notifier.build_messages(target, self._changes(), SKU_META)
+        self.assertEqual(msgs[0][2], "https://buy.example.com/iphone")
+
+    def test_url_is_none_when_no_available(self):
+        changes = [{"part": "MJXV4ZA/A", "store": "ifc mall",
+                    "from": "available", "to": "unavailable", "quote": "暫無供應"}]
+        target = {"push_mode": "merged", "order_url": "https://buy.example.com/iphone"}
+        msgs = notifier.build_messages(target, changes, SKU_META)
+        self.assertIsNone(msgs[0][2])
+
+    def test_merged_truncation_still_applies(self):
+        changes = [{"part": "MJXV4ZA/A", "store": f"store{i}", "to": "available", "quote": f"q{i}"}
+                   for i in range(notifier.MAX_LISTED + 2)]
+        title, body, _ = notifier.build_messages({"push_mode": "merged"}, changes, SKU_META)[0]
+        self.assertIn("等 2 條", body)
+        self.assertTrue(title)
 
     def test_per_store_grouping_same_store(self):
         meta = {
@@ -294,13 +330,6 @@ class BuildMessagesTest(unittest.TestCase):
         self.assertEqual(msgs[0][0], "Apple 中環 有貨了")
         self.assertEqual(len(msgs[0][1].split("\n")), 2)
 
-    def test_merged_truncation_still_applies(self):
-        changes = [{"part": "MJXV4ZA/A", "store": f"store{i}", "to": "available", "quote": f"q{i}"}
-                   for i in range(notifier.MAX_LISTED + 2)]
-        title, body = notifier.build_messages({"push_mode": "merged"}, changes, SKU_META)[0]
-        self.assertIn("等 2 條", body)
-        self.assertTrue(title)
-
     def test_push_target_per_store_sends_one_per_store(self):
         target = dict(TARGET, push_mode="per_store")
         with mock.patch("urllib.request.urlopen", return_value=fake_response()) as m:
@@ -315,6 +344,35 @@ class BuildMessagesTest(unittest.TestCase):
             results = notifier.push_target(target, self._changes(), SKU_META)
         self.assertEqual(len(results), 1)
         self.assertEqual(m.call_count, 1)
+
+    def test_push_target_attaches_apple_icon_always(self):
+        # 所有推送都带 Apple 图标
+        with mock.patch("urllib.request.urlopen", return_value=fake_response()) as m:
+            notifier.push_target(TARGET, self._changes(), SKU_META)
+        _, payload = sent_payload(m)
+        self.assertEqual(payload["icon"], notifier.APPLE_ICON)
+
+    def test_push_target_url_only_when_available(self):
+        # 含「有货」变动 → 带 url（目标未填 order_url 则回退主页）
+        with mock.patch("urllib.request.urlopen", return_value=fake_response()) as m:
+            notifier.push_target(TARGET, self._changes(), SKU_META)
+        _, payload = sent_payload(m)
+        self.assertEqual(payload["url"], notifier.APPLE_HOME)
+
+    def test_push_target_url_uses_target_order_url(self):
+        target = dict(TARGET, order_url="https://buy.example.com/x")
+        with mock.patch("urllib.request.urlopen", return_value=fake_response()) as m:
+            notifier.push_target(target, self._changes(), SKU_META)
+        _, payload = sent_payload(m)
+        self.assertEqual(payload["url"], "https://buy.example.com/x")
+
+    def test_push_target_no_url_when_only_unavailable(self):
+        changes = [{"part": "MJXV4ZA/A", "store": "ifc mall",
+                    "from": "available", "to": "unavailable", "quote": "暫無供應"}]
+        with mock.patch("urllib.request.urlopen", return_value=fake_response()) as m:
+            notifier.push_target(TARGET, changes, SKU_META)
+        _, payload = sent_payload(m)
+        self.assertNotIn("url", payload)
 
 
 class FormatSnapshotTest(unittest.TestCase):

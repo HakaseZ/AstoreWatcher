@@ -183,7 +183,16 @@ def push_cached_first_full(target: dict) -> dict:
     sku_meta = {s["part"]: s for s in load_skus() if isinstance(s, dict) and s.get("part")}
     title, body = notifier.format_snapshot(
         snapshot, target.get("parts") or [], sku_meta, target.get("stores") or [])
-    ok, detail = bark_post(target.get("bark_url", ""), title, body)
+    ok, detail = bark_post(
+        target.get("bark_url", ""),
+        title, body,
+        icon=notifier.APPLE_ICON,
+        # 首推全量：仅当所选范围有货才带下单链接，全无货则不带（与变动推送一致）
+        link=((target.get("order_url") or notifier.APPLE_HOME)
+              if notifier.snapshot_has_available(
+                  snapshot, target.get("parts") or [], target.get("stores") or [])
+              else None),
+    )
     if not ok:
         return {"ok": False, "detail": detail}
 
@@ -207,6 +216,7 @@ class TargetIn(BaseModel):
     enabled: bool = True
     parts: list[str] = []
     stores: list[str] = []
+    order_url: str = ""  # 可选：点通知横幅跳转的下单页；缺省回退 Apple 主页
     notify_on: list[str] = ["available", "unavailable"]
     push_mode: str = DEFAULT_PUSH_MODE
 
@@ -219,18 +229,21 @@ class ConfigIn(BaseModel):
 
 # ---------------------------------------------------------------- Bark 推送
 
-def bark_post(url: str, title: str, body: str) -> tuple[bool, str]:
+def bark_post(url: str, title: str, body: str, *, icon: str = None, link: str = None) -> tuple[bool, str]:
     """按 Bark 协议 POST JSON。返回 (是否成功, 详情文本)。
 
     只用标准库 urllib；失败不抛异常，详情交给界面展示。
+    icon / link 可选：icon 为通知图标 URL，link 为点击横幅跳转地址。
     """
-    payload = json.dumps(
-        {"title": title, "body": body, "group": BARK_GROUP},
-        ensure_ascii=False,
-    ).encode("utf-8")
+    payload = {"title": title, "body": body, "group": BARK_GROUP}
+    if icon:
+        payload["icon"] = icon
+    if link:
+        payload["url"] = link
+    data = json.dumps(payload, ensure_ascii=False).encode("utf-8")
     request = urllib.request.Request(
         url,
-        data=payload,
+        data=data,
         method="POST",
         headers={
             "Content-Type": "application/json",
@@ -381,7 +394,11 @@ def api_test_target(target_id: str) -> dict:
     now = datetime.now(HK_TZ).strftime("%Y-%m-%d %H:%M:%S")
     title = "AstoreWatcher 测试推送"
     body = f"目标：{target['name']}\n时间：{now}（香港时间）"
-    ok, detail = bark_post(target["bark_url"], title, body)
+    ok, detail = bark_post(
+        target["bark_url"], title, body,
+        icon=notifier.APPLE_ICON,
+        link=target.get("order_url") or notifier.APPLE_HOME,
+    )
     return {"ok": ok, "detail": detail}
 
 

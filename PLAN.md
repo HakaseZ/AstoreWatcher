@@ -142,17 +142,104 @@ main.py                 # 加载 skus_hk.json → 3 批查询 → 打印结果�
 镜像体积 978MB（spike 镜像 2.76GB），主要来自 chromium 本体。
 `restart: "no"`（M1 单次运行），M2 改常驻轮询时切 `unless-stopped`。
 
-### M2 — 轮询 + 通知
+### M2 — 常驻轮询 + Bark 通知 + 配置界面
+
+> 状态：**方案已定，待实施**
+
+#### 需求
+
+常驻轮询并在库存状态变化时推 Bark；另加一个前端界面配置推送：录入 Bark 地址、
+为该地址勾选它要关注的 SKU。**多目标模型**：可有多个 Bark 地址，各自独立配一套 SKU。
+
+#### 架构
+
+同一镜像两个 service，共享 `./data` —— web 重启不影响轮询，镜像只构建一份。
 
 ```
-main.py        # 入口、CLI、装配
-browser.py     # Playwright 会话管理、cookie 重热
-poller.py      # 分批查询、轮询间隔 + 随机抖动
-state.py       # 上次状态持久化（防重复告警）
-notifier.py    # Bark 推送
-config.json / config.example.json
+docker-compose.yml
+  ├─ watcher: python3 main.py poll   restart: unless-stopped   # 唯一开 chromium 的进程
+  └─ web:     python3 main.py web    restart: unless-stopped   # 只提供 API + 静态页
 ```
-`.gitignore` 追加：`data/`、`config.json`（含 Bark key）
+
+#### 文件
+
+| 文件 | 职责 |
+|---|---|
+| `browser.py` | 从 main.py 抽出 M0 已验证配方：persistent context + CDP Client Hints 覆盖 + reheat + profile 重建 |
+| `config.py` | 读写 `data/config.json`，原子写（临时文件 + `os.replace`），mtime 热加载 |
+| `state.py` | `data/state.json` 记录上次 `(part, store) → 状态`，只推变化 |
+| `notifier.py` | Bark POST（title/body/group/icon/level）；测试推送复用同一函数 |
+| `poller.py` | 循环：3 批查询 → 解析 → 逐目标比对状态 → 推送 |
+| `web.py` | FastAPI：挂 `static/`，只吐 JSON |
+| `static/index.html` | 原生 JS 单页：目标管理 + SKU 勾选 + 测试推送（**无构建链**） |
+| `main.py` | CLI 入口：`poll` / `web` 子命令 |
+
+#### 配置模型 `data/config.json`
+
+```json
+{
+  "location": "中環",
+  "interval_sec": 120,
+  "jitter_sec": 30,
+  "targets": [
+    {
+      "id": "t1",
+      "name": "我的手机",
+      "bark_url": "https://api.day.app/<key>",
+      "enabled": true,
+      "parts": ["MJXV4ZA/A"],
+      "notify_on": ["available"]
+    }
+  ]
+}
+```
+
+- `config.json` 进 `.gitignore`（含 key），另提供 `config.example.json`
+- watcher 每轮按 mtime 重新读取 → 界面改完下一轮生效，无需重启
+- **轮询间隔下限 60s**（配置校验时 clamp），默认 120s + 0~30s 抖动
+
+#### API
+
+```
+GET    /api/config              读配置（含 targets）
+PUT    /api/config              保存配置
+GET    /api/skus                32 个 SKU 元数据，供勾选
+POST   /api/targets             新增目标
+PUT    /api/targets/{id}        改目标
+DELETE /api/targets/{id}        删目标
+POST   /api/targets/{id}/test   发一条测试推送，返回 Bark 响应
+```
+
+#### 界面
+
+单页：目标列表（名称 / Bark 地址 / 启用开关 / 删除 / 测试推送）+ SKU 勾选区
+（按机型 → 颜色 → 容量分组，支持全选、按机型全选、搜索）+ 轮询设置（地点、间隔、抖动）+ 保存。
+范围：仅配置 + 测试推送，不做状态页/推送历史。
+
+#### 推送判定
+
+- 每个目标**独立判断**：只在自己的 `parts` 内比对状态
+- 默认只推 `unavailable → available`（`notify_on` 可配是否也推下架）
+- Bark 地址按用户填的 URL 原样 POST JSON，自托管 Bark 同样适用
+
+#### 默认参数
+
+轮询 120s + 0~30s 抖动（下限 60s）；web 绑 `127.0.0.1:8787`，不对外暴露（Bark key 不外泄）。
+
+#### 实施顺序
+
+- **M2a 后端骨架**：抽 `browser.py`、`config.py`、`state.py`、`notifier.py`、`poller.py` + CLI，
+  先用命令行跑通多目标推送
+- **M2b 界面**：`web.py` API + `static/index.html`
+- **M2c 收尾**：compose 双 service、`.gitignore`、`config.example.json`、README 用法、PLAN 更新
+
+#### 风险
+
+| 风险 | 应对 |
+|---|---|
+| 界面与轮询同时改 config.json | 原子写；watcher 解析失败时沿用旧配置并记日志 |
+| 常驻后请求量增大触发风控 | 间隔 ≥60s + 抖动；每轮固定 3 批（已确认覆盖全港 6 店）；M3 加指数退避 |
+| Bark key 泄露 | config.json 不入库；web 只绑 127.0.0.1 |
 
 ### M3 — 稳健性
 
@@ -181,9 +268,8 @@ cookie 失效自动重开购买页、指数退避重试、SIGTERM 优雅退出�
 
 ### 仍未确认（不阻塞 M2）
 
-- 是否监控全部 32 个 SKU，还是只盯部分机型/颜色/容量
-- 轮询间隔（文档建议 ≥60s + 抖动，未压测过限流）
-- Bark key 放环境变量还是 `config.json`
+- 是否监控全部 32 个 SKU（界面已支持按目标自由勾选，此项转为使用偏好）
+- Bark key 放环境变量还是 `config.json`（已定：config.json，但文件不入库）
 
 ## 7. 风险登记
 

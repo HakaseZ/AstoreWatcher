@@ -111,7 +111,7 @@ class FormatChangeTest(unittest.TestCase):
                   "from": "unavailable", "to": "available", "quote": "備妥於： 今日"}
         title, body = notifier.format_change(change, SKU_META)
         self.assertEqual(title, "您关注的 iPhone 18 Pro Max 512GB 布根地紅色 监测到库存变化")
-        self.assertEqual(body, "門店：ifc mall\n狀態：備妥於： 今日")
+        self.assertEqual(body, "門店：Apple 中環\n狀態：備妥於： 今日")
 
     def test_unavailable_title(self):
         # 变动推送标题统一，不再区分有货/无货
@@ -119,12 +119,12 @@ class FormatChangeTest(unittest.TestCase):
                   "from": "available", "to": "unavailable", "quote": "暫無供應"}
         title, body = notifier.format_change(change, SKU_META)
         self.assertEqual(title, "您关注的 iPhone 18 Pro Max 512GB 布根地紅色 监测到库存变化")
-        self.assertEqual(body, "門店：Canton Road\n狀態：暫無供應")
+        self.assertEqual(body, "門店：Apple 廣東道\n狀態：暫無供應")
 
     def test_missing_quote_fallback(self):
         change = {"part": "MJXV4ZA/A", "store": "apm Hong Kong", "to": "available", "quote": ""}
         _, body = notifier.format_change(change, SKU_META)
-        self.assertEqual(body, "門店：apm Hong Kong\n狀態：可取貨")
+        self.assertEqual(body, "門店：Apple 觀塘\n狀態：可取貨")
 
     def test_missing_meta_falls_back_to_part(self):
         change = {"part": "UNKNOWN1", "store": "ifc mall", "to": "available", "quote": "q"}
@@ -187,7 +187,7 @@ class PushTargetTest(unittest.TestCase):
         self.assertEqual(len(results), 1)  # 合并成一条推送
         self.assertTrue(results[0][0])
         _, payload = sent_payload(m)
-        self.assertIn("ifc mall", payload["body"])
+        self.assertIn("Apple 中環", payload["body"])
         self.assertIn("等 2 條", payload["body"])
         self.assertNotIn(f"q{notifier.MAX_LISTED}", payload["body"])
 
@@ -223,8 +223,8 @@ class BuildMessagesTest(unittest.TestCase):
         title, body = msgs[0]
         # 单 SKU 变动 → 标题用完整型号（型号+颜色+容量）
         self.assertEqual(title, "您关注的 iPhone 18 Pro Max 512GB 布根地紅色 监测到库存变化")
-        self.assertIn("ifc mall", body)
-        self.assertIn("Canton Road", body)
+        self.assertIn("Apple 中環", body)
+        self.assertIn("Apple 廣東道", body)
 
     def test_merged_splits_by_model(self):
         meta = {
@@ -272,13 +272,13 @@ class BuildMessagesTest(unittest.TestCase):
         msgs = notifier.build_messages({"push_mode": "per_store"}, self._changes(), SKU_META)
         self.assertEqual(len(msgs), 2)
         titles = [t for t, _ in msgs]
-        self.assertEqual(titles[0], "ifc mall 有貨了")
-        self.assertEqual(titles[1], "Canton Road 無貨了")
+        self.assertEqual(titles[0], "Apple 中環 有貨了")
+        self.assertEqual(titles[1], "Apple 廣東道 無貨了")
         self.assertIn("iPhone 18 Pro Max 512GB 布根地紅色：備妥於： 今日", msgs[0][1])
         self.assertIn("暫無供應", msgs[1][1])
         # 每条只含自己门店的内容
-        self.assertNotIn("Canton Road", msgs[0][1])
-        self.assertNotIn("ifc mall", msgs[1][1])
+        self.assertNotIn("Apple 廣東道", msgs[0][1])
+        self.assertNotIn("Apple 中環", msgs[1][1])
 
     def test_per_store_grouping_same_store(self):
         meta = {
@@ -291,7 +291,7 @@ class BuildMessagesTest(unittest.TestCase):
         ]
         msgs = notifier.build_messages({"push_mode": "per_store"}, changes, meta)
         self.assertEqual(len(msgs), 1)
-        self.assertEqual(msgs[0][0], "ifc mall 有貨了")
+        self.assertEqual(msgs[0][0], "Apple 中環 有貨了")
         self.assertEqual(len(msgs[0][1].split("\n")), 2)
 
     def test_merged_truncation_still_applies(self):
@@ -337,7 +337,7 @@ class FormatSnapshotTest(unittest.TestCase):
                                                ["MJXV4ZA/A"], SKU_META)
         self.assertEqual(
             body,
-            "iPhone 18 Pro Max 512GB 布根地紅色：ifc mall、Canton Road 可取貨；其餘 4 店暫無供應",
+            "iPhone 18 Pro Max 512GB 布根地紅色：Apple 中環、Apple 廣東道 可取貨；其餘 4 店暫無供應",
         )
 
     def test_all_unavailable_line(self):
@@ -354,7 +354,7 @@ class FormatSnapshotTest(unittest.TestCase):
         title, body = notifier.format_snapshot(snapshot, ["MJXQ4ZA/A"], SKU_META)
         self.assertEqual(title, "正在为您监测 iPhone 库存，当前库存如下")
         self.assertEqual(len(body.split("\n")), 1)
-        self.assertIn("ifc mall 可取貨", body)
+        self.assertIn("Apple 中環 可取貨", body)
 
     def test_part_without_data(self):
         # part 在关注列表里但本轮没查到门店数据

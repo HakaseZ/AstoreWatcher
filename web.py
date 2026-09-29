@@ -244,10 +244,11 @@ def api_get_skus() -> list[dict]:
 
 
 def known_stores() -> list[str]:
-    """「推送门店」选项的门店名列表。
+    """「推送门店」选项只展示中文店名（见 config.STORE_DISPLAY）。
 
-    优先用轮询时从 Apple 接口发现的真实店名（data/stores.json），
-    缺失或为空时回退到 config.HK_STORES（6 家 HK 门店中文名）。
+    轮询时从 Apple 接口发现的真实店名（data/stores.json，英文 slug）翻成中文，
+    再补齐全 6 家官方中文名，去重后返回。界面勾选写入 config 的也是中文名，
+    匹配 Apple 数据时由 notifier 内部用 to_key 归一到英文 slug。
     """
     path = os.path.join(os.path.dirname(os.path.abspath(config_path())), "stores.json")
     try:
@@ -255,8 +256,14 @@ def known_stores() -> list[str]:
             discovered = json.load(f)
     except (OSError, ValueError):
         discovered = []
-    merged = [s for s in discovered if isinstance(s, str)] if isinstance(discovered, list) else []
-    for s in config_mod.HK_STORES:
+    merged = []
+    for s in discovered if isinstance(discovered, list) else []:
+        if not isinstance(s, str):
+            continue
+        zh = config_mod.to_display(s)  # 英文 slug → 中文；已是中文 / 未收录则原样
+        if zh not in merged:
+            merged.append(zh)
+    for s in config_mod.HK_STORES:  # 补齐 6 家官方中文名
         if s not in merged:
             merged.append(s)
     return merged

@@ -203,5 +203,31 @@ class LoadCachedTest(unittest.TestCase):
         self.assertEqual(cache["mtime"], None)
 
 
+class StoreNameMapTest(unittest.TestCase):
+    """门店名：英文 slug（Apple 接口键）↔ 中文展示名。"""
+    def test_display_english_to_chinese(self):
+        self.assertEqual(config.to_display("ifc mall"), "Apple 中環")
+        self.assertEqual(config.to_display("Canton Road"), "Apple 廣東道")
+        self.assertEqual(config.to_display("apm Hong Kong"), "Apple 觀塘")
+
+    def test_display_idempotent_for_chinese_and_unknown(self):
+        # 已是中文 → 原样；接口未收录的英文 → 原样（不丢信息）
+        self.assertEqual(config.to_display("Apple 中環"), "Apple 中環")
+        self.assertEqual(config.to_display("Some New Store"), "Some New Store")
+
+    def test_key_chinese_to_english(self):
+        self.assertEqual(config.to_key("Apple 中環"), "ifc mall")
+        self.assertEqual(config.to_key("Apple 廣東道"), "Canton Road")
+
+    def test_key_idempotent_for_english_and_unknown(self):
+        self.assertEqual(config.to_key("ifc mall"), "ifc mall")
+        self.assertEqual(config.to_key("Some New Store"), "Some New Store")
+
+    def test_map_is_bidirectional_for_all_six(self):
+        for en, zh in config.STORE_DISPLAY.items():
+            self.assertEqual(config.to_key(config.to_display(en)), en)
+            self.assertEqual(config.to_display(config.to_key(zh)), zh)
+
+
 if __name__ == "__main__":
     unittest.main()

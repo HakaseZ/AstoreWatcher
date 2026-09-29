@@ -1,0 +1,16 @@
+{
+  "location": "中環",
+  "interval_sec": 120,
+  "targets": [
+    {
+      "id": "example",
+      "name": "示例：我的手机",
+      "bark_url": "https://api.day.app/在这里填你的key",
+      "enabled": true,
+      "parts": ["MJXV4ZA/A", "MJT34ZA/A"],
+      "stores": ["Apple 中環", "Apple 銅鑼灣"],
+      "notify_on": ["available"],
+      "push_mode": "merged"
+    }
+  ]
+}

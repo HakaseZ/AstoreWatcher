@@ -188,12 +188,14 @@ docker-compose.yml
       "bark_url": "https://api.day.app/<key>",
       "enabled": true,
       "parts": ["MJXV4ZA/A"],
-      "notify_on": ["available"]
+      "notify_on": ["available"],
+      "push_mode": "merged"
     }
   ]
 }
 ```
 
+- `push_mode`：`merged`（默认，多家门店汇总成一条推送）/ `per_store`（按门店分条推送）
 - `config.json` 进 `.gitignore`（含 key），另提供 `config.example.json`
 - watcher 每轮按 mtime 重新读取 → 界面改完下一轮生效，无需重启
 - **轮询间隔下限 60s**（配置校验时 clamp），默认 120s + 0~30s 抖动
@@ -218,8 +220,12 @@ POST   /api/targets/{id}/test   发一条测试推送，返回 Bark 响应
 
 #### 推送判定
 
+- **首次加入检测**：该目标推送**一次全量状态**（它关注的 SKU × 全部 6 家门店，含无货），
+  标记写入 `data/init.json`；推送失败则不落标记，下一轮重试首轮全量推送
+- **此后**：只在状态变化时推送 —— `unavailable → available`（已补货）或
+  `available → unavailable`（已售完，由 `notify_on` 控制是否开启）
 - 每个目标**独立判断**：只在自己的 `parts` 内比对状态
-- 默认只推 `unavailable → available`（`notify_on` 可配是否也推下架）
+- 多条变化可按 `push_mode` 汇总成一条，或按门店拆成多条
 - Bark 地址按用户填的 URL 原样 POST JSON，自托管 Bark 同样适用
 
 #### 默认参数

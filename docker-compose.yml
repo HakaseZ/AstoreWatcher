@@ -1,17 +1,35 @@
 services:
+  # 常驻轮询 + 推送。唯一开 chromium 的进程。
   watcher:
     build: .
     image: astore-watcher:latest
-    container_name: astore-watcher
-    # M1 为单次运行；M2 改为常驻轮询时切回 unless-stopped
-    restart: "no"
+    command: ["python3", "main.py", "poll"]
+    restart: unless-stopped
     # Chromium 默认 /dev/shm 只有 64MB，不加会随机崩溃
     shm_size: "2gb"
     volumes:
-      # 浏览器 profile：shield cookie 持久化，重启后不必重新过校验
+      # 浏览器 profile + config.json + state.json + init.json
       - ./data:/data
     environment:
       LOCATION: "中環"
       TZ: Asia/Hong_Kong
-      # M2 接入 Bark 通知后打开：
-      # BARK_KEY: ""
+
+  # 配置界面。不碰浏览器，重启它不影响轮询。
+  web:
+    build: .
+    image: astore-watcher:latest
+    command: ["python3", "main.py", "web"]
+    restart: unless-stopped
+    ports:
+      # 监听所有网卡（0.0.0.0），允许从宿主机外的浏览器 / LAN 访问配置界面
+      - "0.0.0.0:8787:8787"
+    volumes:
+      - ./data:/data
+    environment:
+      CONFIG_PATH: /data/config.json
+      SKUS_PATH: /app/skus_hk.json
+      # 容器内必须绑 0.0.0.0（端口映射转发到容器 eth0，绑回环会连不上）；
+      # 对外只暴露宿主机 127.0.0.1，由上面的 ports 控制
+      HOST: "0.0.0.0"
+      PORT: "8787"
+      TZ: Asia/Hong_Kong

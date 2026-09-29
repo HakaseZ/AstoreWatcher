@@ -4,3 +4,6 @@ __pycache__/
 .venv/
 .env
 data/
+# 真实配置含 Bark key，不入库；用 config.example.json 作为模板
+config.json
+*.bad

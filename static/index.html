@@ -147,9 +147,10 @@
     <h2>推送目标</h2>
     <div id="targetList"></div>
     <div class="toolbar"><button id="btnAdd" class="primary">+ 新增目标</button></div>
-    <div class="hint">每个目标有独立的一套关注 SKU 与推送门店。「测试推送」会先自动保存当前配置。<br>
-      <b>SKU 与门店均为必选</b>（不可为空）。首次加入的目标会推送一次它关注的全部 SKU 的库存状态（含无货），
-      之后仅在库存变动（补货 / 售完）时推送。禁用后再启用也会重新推送一次全量状态。</div>
+    <div class="hint">每个目标独立关注一套 SKU 与门店，可分别推到不同 Bark。「测试推送」会先自动保存当前配置。<br>
+      • <b>SKU 与门店都必填</b>。<br>
+      • 新目标首次推送一次全量；之后只在库存变动（补货 / 售完）时推送。<br>
+      • 禁用后再启用，会再推一次全量。</div>
   </section>
 </main>
 
@@ -349,10 +350,10 @@
         '<div class="field">' +
           '<label for="edMode">推送方式</label>' +
           '<select id="edMode">' +
-            '<option value="merged"' + (t.push_mode !== "per_store" ? " selected" : "") + '>汇总一条（同型号合并，多个型号分条）</option>' +
-            '<option value="per_store"' + (t.push_mode === "per_store" ? " selected" : "") + '>按门店分条（每家门店各发一条）</option>' +
+            '<option value="merged"' + (t.push_mode !== "per_store" ? " selected" : "") + '>按型号汇总（多个型号各一条）</option>' +
+            '<option value="per_store"' + (t.push_mode === "per_store" ? " selected" : "") + '>按门店分条（每家一条）</option>' +
           '</select>' +
-          '<div class="hint">只影响同一次检测里涉及多家门店 / 多个型号时的推送条数。</div>' +
+          '<div class="hint">一次检测到多家门店 / 多个型号时，决定每条推送合并到什么范围。</div>' +
         '</div>' +
         '<div class="field">' +
           '<label>推送门店 <span class="req">*</span></label>' +

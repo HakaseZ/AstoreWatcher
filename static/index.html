@@ -323,13 +323,6 @@
 
   function editorHtml() {
     var t = draft;
-    // 启用开关始终在编辑面板内（新增默认启用，编辑可改）；无卡片快捷开关
-    var enabledField =
-      '<div class="field">' +
-        '<label class="switch"><input type="checkbox" id="edEnabled"' + (t.enabled ? " checked" : "") +
-          '><span class="slider"></span><span class="switch-label">启用这个目标</span></label>' +
-        '<div class="hint">关闭后该目标停止推送；重新启用会再次推送一次全量状态。</div>' +
-      '</div>';
     return '' +
       '<div class="editor-inline">' +
         '<h2>' + (t.id ? "编辑目标" : "新增目标") + '</h2>' +
@@ -344,7 +337,6 @@
             '<input type="text" id="edUrl" placeholder="https://api.day.app/你的KEY" value="' + esc(t.bark_url || "") + '">' +
           '</div>' +
         '</div>' +
-        enabledField +
         '<div class="field">' +
           '<label for="edMode">推送方式</label>' +
           '<select id="edMode">' +
@@ -387,7 +379,8 @@
             '　库存变动即推送　推送方式：' + esc(pushModeLabel(t)) + '</div>' +
         '</div>' +
         '<div class="tactions">' +
-          '<span class="tag' + (t.enabled ? "" : " dirty") + '">' + (t.enabled ? "启用中" : "已禁用") + '</span>' +
+          '<label class="switch switch-sm"><input type="checkbox" data-act="toggle" data-id="' + esc(t.id) + '"' + (t.enabled ? " checked" : "") +
+            '><span class="slider"></span><span class="switch-label">启用</span></label>' +
           '<button type="button" data-act="edit" data-id="' + esc(t.id) + '">编辑</button>' +
           '<button type="button" data-act="test" data-id="' + esc(t.id) + '">测试推送</button>' +
           '<button type="button" class="danger" data-act="del" data-id="' + esc(t.id) + '">删除</button>' +
@@ -461,7 +454,9 @@
   async function commitDraft() {
     var name = $("edName").value.trim();
     var bark_url = $("edUrl").value.trim();
-    var enabled = $("edEnabled").checked;  // 开关始终在编辑面板内
+    // 启用开关在卡片上；编辑面板不控制 enabled，沿用目标原有状态（新增默认启用）
+    var enabled = (draft.id === null) ? true
+      : (state.targets.find(function (t) { return t.id === draft.id; }) || {}).enabled;
     var push_mode = $("edMode").value === "per_store" ? "per_store" : "merged";
 
     if (!bark_url) {
@@ -560,7 +555,31 @@
     }
   });
 
-  // 编辑器内：SKU / 门店 chip 切换，完成 / 取消，启用开关
+  // 卡片上的启用开关：拨一下立即持久化（改好即保存），无需再点任何保存按钮
+  $("targetList").addEventListener("change", function (e) {
+    var box = e.target.closest('input[data-act="toggle"]');
+    if (!box) return;
+    var id = box.getAttribute("data-id");
+    var t = state.targets.find(function (x) { return x.id === id; });
+    if (!t) return;
+    t.enabled = box.checked;
+    renderTargets();
+    markDirty();
+    api("/api/targets/" + encodeURIComponent(id),
+        { method: "PUT", body: JSON.stringify(t) })
+      .then(function () {
+        savedSnapshot = JSON.stringify(state);
+        showMsg(t.enabled ? "已启用并立即生效" : "已禁用并立即生效", "ok");
+      })
+      .catch(function (err) {
+        t.enabled = !box.checked;
+        box.checked = t.enabled;
+        renderTargets();
+        showMsg("开关保存失败：" + (err && err.message ? err.message : err), "err");
+      });
+  });
+
+  // 编辑器内：SKU / 门店 chip 切换，完成 / 取消
   document.addEventListener("click", function (e) {
     var partBtn = e.target.closest("button[data-part]");
     if (partBtn && draft) {

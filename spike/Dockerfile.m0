@@ -1,0 +1,21 @@
+# ⚠️ M0 验证专用临时镜像，不是生产镜像。
+# 生产镜像要求：最小体积、纯 Dockerfile + docker-compose 构建部署（见 PLAN.md）。
+#
+# 选这个基础镜像的原因：本地已存在，无需拉取（MCR 官方 playwright 镜像 762MB 大层只有 100KB/s）。
+FROM mcr.microsoft.com/devcontainers/python:3-3.14-trixie
+
+# 默认 apt 源（deb.debian.org）直连不通，换清华源
+RUN printf 'deb https://mirrors.tuna.tsinghua.edu.cn/debian/ trixie main contrib non-free non-free-firmware\ndeb https://mirrors.tuna.tsinghua.edu.cn/debian/ trixie-updates main contrib non-free-firmware\n' > /etc/apt/sources.list.d/tuna.list \
+    && rm -f /etc/apt/sources.list.d/debian.sources \
+    && apt-get update -qq \
+    && apt-get install -y --no-install-recommends \
+        chromium \
+        xvfb \
+        fonts-noto-cjk \
+    && rm -rf /var/lib/apt/lists/*
+
+# 不下载 Playwright 自带浏览器（官方 CDN 不通），改用 apt 装的 /usr/bin/chromium
+ENV PLAYWRIGHT_SKIP_BROWSER_DOWNLOAD=1
+RUN pip install --no-cache-dir --break-system-packages playwright==1.63.0
+
+WORKDIR /spike

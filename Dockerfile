@@ -27,7 +27,7 @@ RUN pip install --no-cache-dir -r /tmp/requirements.txt \
 
 WORKDIR /app
 COPY skus_hk.json config.example.json main.py ./
-COPY browser.py config.py state.py notifier.py poller.py web.py ./
+COPY worker.py supervisor.py poller.py config.py state.py notifier.py web.py ./
 COPY static/ static/
 
 CMD ["python3", "main.py"]

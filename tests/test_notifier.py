@@ -190,18 +190,24 @@ class PushTargetTest(unittest.TestCase):
             self.assertEqual(notifier.push_target(TARGET, [], SKU_META), [])
         m.assert_not_called()
 
-    def test_multiple_changes_batched_and_truncated(self):
-        target = dict(TARGET, parts=["MJXV4ZA/A"])
-        changes = [{"part": "MJXV4ZA/A", "store": "ifc mall", "to": "available", "quote": f"q{i}"}
-                   for i in range(notifier.MAX_LISTED + 2)]
+    def test_same_sku_many_stores_merged_not_truncated(self):
+        """同一 SKU 的多家门店合并进一行，不再按条数截断 —— 6 家门店也列得下。"""
+        store_names = [f"store{i}" for i in range(notifier.MAX_LISTED + 2)]
+        # push_target 只推目标勾选的门店，所以这里要把这些虚拟门店一并勾上
+        target = dict(TARGET, parts=["MJXV4ZA/A"], stores=store_names)
+        changes = [{"part": "MJXV4ZA/A", "store": s, "to": "available", "quote": f"q{i}"}
+                   for i, s in enumerate(store_names)]
         with mock.patch("urllib.request.urlopen", return_value=fake_response()) as m:
             results = notifier.push_target(target, changes, SKU_META)
         self.assertEqual(len(results), 1)  # 合并成一条推送
         self.assertTrue(results[0][0])
         _, payload = sent_payload(m)
-        self.assertIn("Apple 中環", payload["body"])
-        self.assertIn("等 2 條", payload["body"])
-        self.assertNotIn(f"q{notifier.MAX_LISTED}", payload["body"])
+        body = payload["body"]
+        self.assertNotIn("等", body)
+        for i in range(notifier.MAX_LISTED + 2):
+            self.assertIn(f"store{i}", body)
+        # 型号名只出现一次 —— 这是「合并了」的直接证据
+        self.assertEqual(body.count("iPhone 18 Pro Max 512GB 布根地紅色"), 1)
 
     def test_single_change_has_no_ellipsis(self):
         changes = [{"part": "MJXV4ZA/A", "store": "ifc mall", "to": "available", "quote": "q"}]
@@ -309,12 +315,47 @@ class BuildMessagesTest(unittest.TestCase):
         msgs = notifier.build_messages(target, changes, SKU_META)
         self.assertIsNone(msgs[0][2])
 
-    def test_merged_truncation_still_applies(self):
-        changes = [{"part": "MJXV4ZA/A", "store": f"store{i}", "to": "available", "quote": f"q{i}"}
-                   for i in range(notifier.MAX_LISTED + 2)]
-        title, body, _ = notifier.build_messages({"push_mode": "merged"}, changes, SKU_META)[0]
-        self.assertIn("等 2 條", body)
+    def test_merged_truncation_applies_per_sku(self):
+        """截断口径是 SKU 数（不是门店数）：超过 MAX_LISTED 个 SKU 才补「等 N 條」。"""
+        meta = {f"P{i}": {"model": "iPhone 18 Pro", "color": "黑色", "capacity": f"{i}GB"}
+                for i in range(notifier.MAX_LISTED + 1)}
+        changes = [{"part": f"P{i}", "store": "ifc mall", "to": "available", "quote": "q"}
+                   for i in range(notifier.MAX_LISTED + 1)]
+        title, body, _ = notifier.build_messages({"push_mode": "merged"}, changes, meta)[0]
+        self.assertIn("等 1 條", body)
         self.assertTrue(title)
+
+    def test_merged_same_sku_multi_store_one_line(self):
+        """同一 SKU 多家门店补货 → 一行「可取貨：A、B」，不再每家店重复一遍型号名。"""
+        changes = [
+            {"part": "MJXV4ZA/A", "store": "ifc mall", "to": "available", "quote": "今日可取"},
+            {"part": "MJXV4ZA/A", "store": "Causeway Bay", "to": "available", "quote": "今日可取"},
+        ]
+        _, body, _ = notifier.build_messages({"push_mode": "merged"}, changes, SKU_META)[0]
+        self.assertEqual(body.split("\n")[1], "可取貨：Apple 中環、Apple 銅鑼灣")
+
+    def test_merged_availability_split_into_two_lines(self):
+        """一店补货、一店售完 → 拆成「可取貨：」与「暫無供應：」两行。"""
+        _, body, url = notifier.build_messages({"push_mode": "merged"},
+                                               self._changes(), SKU_META)[0]
+        self.assertIn("可取貨：Apple 中環", body)
+        self.assertIn("暫無供應：Apple 廣東道", body)
+        self.assertEqual(url, notifier.APPLE_HOME)
+
+    def test_merged_multiple_skus_each_get_a_block(self):
+        """同型号下多个 SKU → 各占一段，标题退化为型号名。"""
+        meta = {
+            "P1": {"model": "iPhone 18 Pro Max", "color": "布根地紅色", "capacity": "256GB"},
+            "P2": {"model": "iPhone 18 Pro Max", "color": "布根地紅色", "capacity": "512GB"},
+        }
+        changes = [{"part": "P1", "store": "ifc mall", "to": "available", "quote": "q"},
+                   {"part": "P2", "store": "ifc mall", "to": "available", "quote": "q"}]
+        msgs = notifier.build_messages({"push_mode": "merged"}, changes, meta)
+        self.assertEqual(len(msgs), 1)
+        title, body, _ = msgs[0]
+        self.assertEqual(title, "您关注的 iPhone 18 Pro Max 监测到库存变化")
+        self.assertIn("iPhone 18 Pro Max 256GB 布根地紅色", body)
+        self.assertIn("iPhone 18 Pro Max 512GB 布根地紅色", body)
 
     def test_per_store_grouping_same_store(self):
         meta = {
@@ -388,35 +429,46 @@ class FormatSnapshotTest(unittest.TestCase):
         snapshot = {"MJXV4ZA/A": self._snapshot([])["MJXV4ZA/A"],
                     "MJXQ4ZA/A": self._snapshot([])["MJXV4ZA/A"]}
         title, _ = notifier.format_snapshot(snapshot, None, SKU_META)
-        self.assertEqual(title, "正在为您监测 iPhone 库存，当前库存如下")
+        self.assertEqual(title, "正在为您监测库存，当前库存如下")
 
-    def test_mixed_availability_line(self):
+    def test_available_lists_store_names(self):
         title, body = notifier.format_snapshot(self._snapshot(["ifc mall", "Canton Road"]),
                                                ["MJXV4ZA/A"], SKU_META)
         self.assertEqual(
             body,
-            "iPhone 18 Pro Max 512GB 布根地紅色：Apple 中環、Apple 廣東道 可取貨；其餘 4 店暫無供應",
+            "iPhone 18 Pro Max 512GB 布根地紅色：2 店可取貨：Apple 中環、Apple 廣東道",
         )
 
     def test_all_unavailable_line(self):
         _, body = notifier.format_snapshot(self._snapshot([]), ["MJXV4ZA/A"], SKU_META)
-        self.assertIn("全部 6 店暫無供應", body)
+        self.assertIn("6 店暫無供應", body)
 
-    def test_all_available_line(self):
+    def test_all_available_lists_every_store(self):
+        """有货时必须给出能去哪买的店名 —— 「N 店可取货」这句话没法拿去 actionable。"""
         _, body = notifier.format_snapshot(self._snapshot(self.STORES), ["MJXV4ZA/A"], SKU_META)
-        self.assertIn("全部 6 店可取貨", body)
+        self.assertIn("6 店可取貨", body)
+        for zh in ("Apple 中環", "Apple 廣東道", "Apple 銅鑼灣",
+                   "Apple 九龍塘", "Apple 觀塘", "Apple 沙田"):
+            self.assertIn(zh, body)
 
     def test_parts_filter_and_order(self):
         snapshot = {"MJXV4ZA/A": self._snapshot([])["MJXV4ZA/A"],
                     "MJXQ4ZA/A": self._snapshot(["ifc mall"])["MJXV4ZA/A"]}
         title, body = notifier.format_snapshot(snapshot, ["MJXQ4ZA/A"], SKU_META)
-        self.assertEqual(title, "正在为您监测 iPhone 库存，当前库存如下")
+        self.assertEqual(title, "正在为您监测库存，当前库存如下")
         self.assertEqual(len(body.split("\n")), 1)
-        self.assertIn("Apple 中環 可取貨", body)
+        self.assertIn("1 店可取貨：Apple 中環", body)
 
     def test_part_without_data(self):
         # part 在关注列表里但本轮没查到门店数据
         _, body = notifier.format_snapshot({"MJXV4ZA/A": {}}, ["MJXV4ZA/A"], SKU_META)
+        self.assertIn("未取到數據", body)
+
+    def test_part_without_data_survives_store_filter(self):
+        """勾选门店后（门店已是必填，生产上永远走这条路径）也不能让 SKU 整行消失：
+        否则「本轮没查到」和「全无货」在推送上表现一样，用户无从分辨。"""
+        _, body = notifier.format_snapshot({"MJXV4ZA/A": {}}, ["MJXV4ZA/A"], SKU_META,
+                                           ["Apple 中環"])
         self.assertIn("未取到數據", body)
 
     def test_part_missing_from_snapshot_omitted(self):
@@ -426,12 +478,12 @@ class FormatSnapshotTest(unittest.TestCase):
 
     def test_empty_snapshot(self):
         title, body = notifier.format_snapshot({}, None, SKU_META)
-        self.assertEqual(title, "正在为您监测 iPhone 库存，当前库存如下")
+        self.assertEqual(title, "正在为您监测库存，当前库存如下")
         self.assertEqual(body, "")
 
     def test_bad_input_does_not_raise(self):
         title, body = notifier.format_snapshot(None, None, None)
-        self.assertEqual(title, "正在为您监测 iPhone 库存，当前库存如下")
+        self.assertEqual(title, "正在为您监测库存，当前库存如下")
         self.assertEqual(body, "")
 
 

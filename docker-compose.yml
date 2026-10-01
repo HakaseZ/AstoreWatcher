@@ -5,14 +5,30 @@ services:
     image: astore-watcher:latest
     command: ["python3", "main.py", "poll"]
     restart: unless-stopped
+    # 固定 hostname 是修复的关键一环：Chromium 判定 SingletonLock 时是「先比 hostname，
+    # hostname 不符就直接 exit 21」。容器 hostname 默认是容器短 ID，每次重建都会变，
+    # 于是残留的旧锁永远无法自行失效。钉死 hostname 后，Chromium 会在 hostname 相符时
+    # 继续校验 pid —— pid 已死就自动接管，陈旧锁从此可以自愈。
+    hostname: astore-watcher
+    # Docker 默认只给 10 秒 SIGTERM 宽限，而一轮轮询最坏要跑 225 秒。poller 收到
+    # SIGTERM 会立刻掐断 worker（而不是等这一轮跑完），所以 60 秒足够干净退出；
+    # 若被 SIGKILL，chromium 来不及释放 SingletonLock，又会留下陈旧锁。
+    stop_grace_period: 60s
     # Chromium 默认 /dev/shm 只有 64MB，不加会随机崩溃
     shm_size: "2gb"
     volumes:
-      # 浏览器 profile + config.json + state.json + init.json
+      # 浏览器 profile + config.json + state.json + init.json + health.json
       - ./data:/data
     environment:
       LOCATION: "中環"
       TZ: Asia/Hong_Kong
+    healthcheck:
+      # 只看「上次成功取数」的新鲜度；连续失败的告警由 Bark 负责，两者职责分开
+      test: ["CMD", "python3", "main.py", "health", "--max-age", "900"]
+      interval: 60s
+      timeout: 15s
+      retries: 3
+      start_period: 120s
 
   # 配置界面。不碰浏览器，重启它不影响轮询。
   web:

@@ -1,6 +1,7 @@
 {
   "location": "中環",
   "interval_sec": 120,
+  "health_webhook": "",
   "targets": [
     {
       "id": "example",

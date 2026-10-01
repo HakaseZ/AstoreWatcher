@@ -3,7 +3,6 @@
 配置由 config.py 提供（支持热加载：每轮按 mtime 重新读取）。
 """
 
-import datetime
 import json
 import logging
 import os
@@ -16,11 +15,15 @@ import time
 import config as config_mod
 import notifier
 import state as state_mod
-from browser import BrowserSession
+import supervisor
 
 log = logging.getLogger("poller")
 
 DEFAULT_DATA_DIR = "/data"
+
+# 连续多少轮「浏览器正常跑完但一个数据都没拿到」才考虑重建 profile。
+# profile 里的 shield cookie 很珍贵，不能因为一次接口抖动就丢掉。
+EMPTY_ROUNDS_BEFORE_REBUILD = 3
 
 _SHUTDOWN = False
 
@@ -84,15 +87,20 @@ def _target_parts(cfg, sku_meta=None):
     return parts
 
 
-def run_once(cfg, sku_meta, profile, state_path, init_path, executable=None):
-    """跑一轮查询 + 推送。返回 (成功取到的 snapshot, 失败批次列表)。"""
+def run_once(cfg, sku_meta, profile, state_path, init_path, executable=None, data_dir=None):
+    """跑一轮查询 + 推送。返回 supervisor.RoundResult。
+
+    浏览器相关的脏活全部交给 supervisor / worker 子进程（见
+    docs/plan-watchdog-hardening.md）：本函数不再直接接触 playwright，
+    浏览器再怎么崩溃、挂死、泄漏，都不会在这个进程里留下状态。
+    """
     prev = state_mod.load(state_path)
     # baseline 仅作本轮判断用的只读快照；真正的写盘走下面加锁的 update_init，
     # 避免数十秒浏览器轮询期间把 web 进程并发写的标记覆盖掉（见 state.update_init）。
     baseline = state_mod.load_init(init_path)
     to_remove = set()          # 本轮要摘除的首推标记（禁用/删除/缺失）
     to_add = {}                # 本轮要写入的首推标记：{tid: {since, parts}}
-    now = datetime.datetime.now().isoformat(timespec="seconds")
+    now = config_mod.hk_now("%Y-%m-%dT%H:%M:%S")
 
     # 计算标记增删（放在最前，确保即使所有目标都被禁用也能及时清标记）：
     # - 已被删除 / 禁用的目标 → 摘除标记，使其重新启用时再次走「首次全量推送」（edge B）
@@ -111,25 +119,21 @@ def run_once(cfg, sku_meta, profile, state_path, init_path, executable=None):
         log.info("没有启用任何推送目标或没有勾选 SKU，本轮跳过")
         if to_remove:
             state_mod.update_init(init_path, remove=to_remove)
-        return {}, []
+        # 没有可监测的目标不是故障，不该触发告警
+        return supervisor.RoundResult(ok=True, kind="NO_PARTS")
 
-    session = BrowserSession(profile, location=cfg.get("location", "中環"),
-                             executable=executable)
-    try:
-        session.start()
-        snapshot, failed = session.fetch_all(parts)
-        # 全批失败：多半是 profile 被污染，丢弃重建再试一轮
-        if failed and not snapshot:
-            log.warning("全部批次失败（HTTP %s），重建 profile 后重试", failed[0]["status"])
-            session.close()
-            session.rebuild_profile()
-            session.start()
-            snapshot, failed = session.fetch_all(parts)
-    finally:
-        session.close()
-
+    result = supervisor.run_round(profile, parts,
+                                  location=cfg.get("location", config_mod.DEFAULT_LOCATION),
+                                  executable=executable, data_dir=data_dir)
+    snapshot = result.snapshot
+    failed = result.failed
+    checked_at = result.checked_at
     if not snapshot:
-        return snapshot, failed
+        # 空快照护栏：不推送、也不写 init 标记，避免发出「共 0 个 SKU」的废纸推送
+        # 并把目标锁死在「已首推」状态。健康和重建判定交由 loop 负责。
+        log.warning("本轮未取到任何数据（%s：%s）", result.kind or "空快照",
+                    result.error or "无失败批次")
+        return result
 
     _write_stores(state_path, snapshot)
 
@@ -164,6 +168,7 @@ def run_once(cfg, sku_meta, profile, state_path, init_path, executable=None):
                 t.get("bark_url"), title, body,
                 icon=notifier.APPLE_ICON,
                 url=first_url,
+                checked_at=checked_at,
             )
             log.info("目标「%s」首次全量推送：%s", t.get("name") or tid, "成功" if ok else f"失败 {detail}")
             if ok:  # 失败则不落标记，下一轮重试全量推送
@@ -178,7 +183,7 @@ def run_once(cfg, sku_meta, profile, state_path, init_path, executable=None):
         # edge A：新增 SKU → 只推该 SKU 的当前状态（含无货），不推已有 SKU
         if new_parts:
             new_entries = state_mod.initial_snapshot(snapshot, new_parts)
-            results = notifier.push_target(t, new_entries, sku_meta)
+            results = notifier.push_target(t, new_entries, sku_meta, checked_at=checked_at)
             ok = sum(1 for r in results if r[0])
             log.info("目标「%s」新增 SKU 首推 %d 条，成功 %d",
                      t.get("name") or tid, len(results), ok)
@@ -195,7 +200,7 @@ def run_once(cfg, sku_meta, profile, state_path, init_path, executable=None):
             changes = state_mod.diff(prev, snapshot, existing, t.get("notify_on") or ["available"])
             if not changes:
                 continue
-            results = notifier.push_target(t, changes, sku_meta)
+            results = notifier.push_target(t, changes, sku_meta, checked_at=checked_at)
             ok = sum(1 for r in results if r[0])
             log.info("目标「%s」推送 %d 条，成功 %d", t.get("name") or tid, len(results), ok)
             for r in results:
@@ -205,20 +210,42 @@ def run_once(cfg, sku_meta, profile, state_path, init_path, executable=None):
     if to_remove or to_add:
         state_mod.update_init(init_path, add=to_add, remove=to_remove)
     state_mod.save(state_path, state_mod.apply(prev, snapshot))
-    return snapshot, failed
+    return result
 
 
 def _install_signal_handler():
+    """SIGTERM 到达时**立刻掐断**正在跑的那一轮，而不是等它跑完。
+
+    为什么不能等：Docker 的 stop_grace_period（默认只有 10s，本 compose 设 60s）
+    远小于一轮的最坏耗时（225s）。真等到这一轮自然结束，容器一定会被 SIGKILL，
+    而 SIGKILL 会让 chromium 来不及释放 SingletonLock —— 正好制造我们要修的那个死锁。
+    代价只是当前这一轮数据丢掉，下一轮几分钟内补上。
+    """
     def handler(signum, frame):
         global _SHUTDOWN
         _SHUTDOWN = True
-        log.info("收到信号 %s，本轮结束后退出", signum)
+        log.info("收到信号 %s，正在中断当前轮次", signum)
+        supervisor.interrupt_worker(f"父进程收到信号 {signum}")
 
     for s in (signal.SIGTERM, signal.SIGINT):
         try:
             signal.signal(s, handler)
         except Exception:
             pass
+
+
+def _sleep_until_next_round(seconds):
+    """分段 sleep：让 SIGTERM 能在秒级生效。
+
+    一整段的长 sleep 会把容器退出拖到 grace 超时之后；切成一秒一段后，
+    信号一来最多再等 1 秒就能进入下一轮退出判定。
+    """
+    deadline = time.time() + max(0.0, seconds)
+    while not _SHUTDOWN:
+        remaining = deadline - time.time()
+        if remaining <= 0:
+            return
+        time.sleep(min(1.0, remaining))
 
 
 def loop(data_dir=DEFAULT_DATA_DIR, skus_path="skus_hk.json", once=False):
@@ -231,18 +258,53 @@ def loop(data_dir=DEFAULT_DATA_DIR, skus_path="skus_hk.json", once=False):
     init_path = os.path.join(data_dir, "init.json")  # 已完成首轮全量推送的 target 标记
     profile = os.path.join(data_dir, "profile")
     sku_meta = load_sku_meta(skus_path)
+    health = supervisor.Health(data_dir)
+    empty_rounds = 0
 
     while True:
         cfg = config_mod.load_cached(cfg_path)
         try:
-            snapshot, failed = run_once(cfg, sku_meta, profile, state_path, init_path)
-            log.info("本轮完成：%d 个 SKU，失败批次 %d", len(snapshot), len(failed))
-        except Exception as e:  # 单轮异常不能让常驻进程死掉
+            result = run_once(cfg, sku_meta, profile, state_path, init_path, data_dir=data_dir)
+            log.info("本轮完成：%d 个 SKU，失败批次 %d%s", len(result.snapshot),
+                     len(result.failed),
+                     f"（检查时间 {result.checked_at}）" if result.checked_at else "")
+        except Exception as e:
+            # 单轮异常不能让常驻进程死掉 —— 但必须被**看见**（记进 health 并按阈值告警），
+            # 上次事故的教训正是异常被默默吞掉导致数月静默失效。
+            result = supervisor.RoundResult(ok=False, kind="INTERNAL",
+                                            error=f"{type(e).__name__}: {e}")
             log.exception("本轮异常：%s", e)
+
+        # 没有任何可监测的目标不算故障，不该触发告警
+        if result.kind == "NO_PARTS":
+            health.record(ok=True, kind=result.kind, profile=profile)
+        else:
+            health.record(ok=result.ok,
+                          kind=result.kind or ("OK" if result.ok else "UNKNOWN"),
+                          error=result.error, round_ms=result.round_ms, profile=profile)
+        health.maybe_alert(cfg)
+
+        # 「浏览器正常跑完、却一个数据都没拿到」累计到阈值且今日还有预算时才动 profile。
+        # 进程级故障（超时/崩溃）不参与计数 —— 那不是 profile 的问题。
+        browser_ok = result.kind in ("OK", "PARTIAL", "NO_PARTS")
+        if result.ok or not browser_ok:
+            empty_rounds = 0
+        else:
+            empty_rounds += 1
+            if empty_rounds >= EMPTY_ROUNDS_BEFORE_REBUILD:
+                if supervisor.rebuild_budget_left(data_dir) > 0:
+                    log.warning("连续 %d 轮未取到数据，备份并重建 profile 冷启动", empty_rounds)
+                    supervisor.discard_profile(profile, data_dir)
+                else:
+                    log.error("连续 %d 轮未取到数据，但今日重建预算已用完，暂不重建",
+                              empty_rounds)
+                empty_rounds = 0
 
         if once or _SHUTDOWN:
             return 0
-        time.sleep(cfg.get("interval_sec", 120) + random.uniform(0, config_mod.RANDOM_JITTER_MAX))
+        _sleep_until_next_round(
+            cfg.get("interval_sec", config_mod.DEFAULT_INTERVAL_SEC)
+            + random.uniform(0, config_mod.RANDOM_JITTER_MAX))
 
 
 if __name__ == "__main__":

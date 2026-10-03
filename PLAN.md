@@ -1,6 +1,20 @@
 # 容器化方案规划（Docker + 浏览器）
 
-> 状态：**M0 spike 已完成（2026-09-29），容器方案验证通过**；M1 起待实施
+> **本文件是规划与决策的历史记录**，记录项目怎么分阶段做起来、当时确定了什么、有哪些风险。
+> 想看**当前代码实际是什么样**（架构、模块职责、机制原理），请去 `docs/architecture.md`；
+> 想看**怎么操作**（构建、启动、配置、排障），请去 `README.md`。
+
+## 0. 阶段进度（2026-10-03 更新）
+
+| 阶段 | 内容 | 状态 |
+|---|---|---|
+| M0 | spike：容器里的浏览器能不能拿到数据 | ✅ 已完成（2026-09-29），结论见 4.1 |
+| M1 | 最小可用镜像 | ✅ 已完成（2026-09-29） |
+| M2 | 常驻轮询 + Bark 通知 + 配置界面 | ✅ 已完成 |
+| M3 | 稳健性（子进程隔离 + 健康检查与告警） | 🔄 进行中 —— 即分支 `feat/watchdog-hardening` 的 PR #3 |
+
+> M2 完成后参数与下面 5 节的原始描述已有出入（间隔下限、抖动、监听地址、CLI 子命令等），
+> **以代码和 `docs/architecture.md` 为准**；差异处已在下文就地标注。
 
 ## 1. 目标与背景
 
@@ -23,6 +37,19 @@
 | 通知渠道 | **Bark**（iOS 推送，`POST https://api.day.app/push`） |
 | 生产镜像形态 | **最小体积，纯 Dockerfile + docker-compose 构建部署**（用户已定，M1 落实） |
 | 分支策略 | 严格遵守 `AGENTS.md`：独立分支 → 我决定 push / PR → 我不自行合并 |
+
+### 2.1 M3（稳健性）追加的决策
+
+| 项 | 决策 |
+|---|---|
+| 浏览器故障隔离 | 采用**子进程隔离**（`supervisor` + `worker`），不用 watchdog 线程 —— 线程内的 `ctx.close()` 走 CDP 通道，浏览器卡死时送不进去 |
+| 告警通道 | 走**独立的 `health_webhook`**，不复用各推送目标的 `bark_url`，避免运维消息混进业务推送流 |
+| 告警未配置时 | **仅配置页显示警示**，不做任何降级（不打日志、不复用目标地址） |
+| 故障恢复后 | 推一条「**已恢复正常**」通知 |
+| SIGTERM 到达 | **立即中断当前轮**，不等它跑完（否则 60s 宽限期不够，容器会被 SIGKILL 而留下陈旧锁） |
+| 单轮硬超时 | **225s** |
+| 健康状态展示 | **做进 web 配置页**（含「未配置告警」警示），而非只有日志 |
+| 旧生产 profile | 不迁移 —— 用户整体重建生产环境，本方案按新 profile 冷启动设计 |
 
 ## 3. 架构骨架
 
@@ -144,112 +171,47 @@ main.py                 # 加载 skus_hk.json → 3 批查询 → 打印结果�
 
 ### M2 — 常驻轮询 + Bark 通知 + 配置界面
 
-> 状态：**方案已定，待实施**
+> 状态：**✅ 已完成**（实施顺序 M2a → M2b → M2c 均已落地）
+>
+> 落地时与本节原始方案的差异（**以代码为准**）：
+> - 轮询间隔下限是 **30s**（不是 60s），抖动 **0~10s**（不是 0~30s），配置里**没有** `jitter_sec` 字段；
+> - web 实际绑 **`0.0.0.0:8787`**（不是 `127.0.0.1`），这是 `SECURITY.md` 里的已知漏洞 1；
+> - `main.py` 现有四个子命令：`poll` / `once` / `web` / `health`（原方案只有 poll / web）；
+> - 多目标的 CRUD 仍存在，但配置以**整份 `config.json` 回传**为主；另有 `/api/health`、`/api/stores`。
+>   当前架构与设计说明见 `docs/architecture.md`。
 
 #### 需求
 
 常驻轮询并在库存状态变化时推 Bark；另加一个前端界面配置推送：录入 Bark 地址、
 为该地址勾选它要关注的 SKU。**多目标模型**：可有多个 Bark 地址，各自独立配一套 SKU。
 
-#### 架构
+> 本节原本还列了当时的架构图、文件职责表、配置模型、API 清单、界面结构与推送判定。
+> 这些内容**现已全部落地，其当前形态以 `docs/architecture.md` 为准** ——
+> 本文件是历史方案、那边是当前实现，两边重复维护必然漂移，故此处不再保留细节。
 
-同一镜像两个 service，共享 `./data` —— web 重启不影响轮询，镜像只构建一份。
-
-```
-docker-compose.yml
-  ├─ watcher: python3 main.py poll   restart: unless-stopped   # 唯一开 chromium 的进程
-  └─ web:     python3 main.py web    restart: unless-stopped   # 只提供 API + 静态页
-```
-
-#### 文件
-
-| 文件 | 职责 |
-|---|---|
-| `browser.py` | 从 main.py 抽出 M0 已验证配方：persistent context + CDP Client Hints 覆盖 + reheat + profile 重建 |
-| `config.py` | 读写 `data/config.json`，原子写（临时文件 + `os.replace`），mtime 热加载 |
-| `state.py` | `data/state.json` 记录上次 `(part, store) → 状态`，只推变化 |
-| `notifier.py` | Bark POST（title/body/group/icon/level）；测试推送复用同一函数 |
-| `poller.py` | 循环：3 批查询 → 解析 → 逐目标比对状态 → 推送 |
-| `web.py` | FastAPI：挂 `static/`，只吐 JSON |
-| `static/index.html` | 原生 JS 单页：目标管理 + SKU 勾选 + 测试推送（**无构建链**） |
-| `main.py` | CLI 入口：`poll` / `web` 子命令 |
-
-#### 配置模型 `data/config.json`
-
-```json
-{
-  "location": "中環",
-  "interval_sec": 120,
-  "jitter_sec": 30,
-  "targets": [
-    {
-      "id": "t1",
-      "name": "我的手机",
-      "bark_url": "https://api.day.app/<key>",
-      "enabled": true,
-      "parts": ["MJXV4ZA/A"],
-      "notify_on": ["available"],
-      "push_mode": "merged"
-    }
-  ]
-}
-```
-
-- `push_mode`：`merged`（默认，多家门店汇总成一条推送）/ `per_store`（按门店分条推送）
-- `config.json` 进 `.gitignore`（含 key），另提供 `config.example.json`
-- watcher 每轮按 mtime 重新读取 → 界面改完下一轮生效，无需重启
-- **轮询间隔下限 60s**（配置校验时 clamp），默认 120s + 0~30s 抖动
-
-#### API
-
-```
-GET    /api/config              读配置（含 targets）
-PUT    /api/config              保存配置
-GET    /api/skus                32 个 SKU 元数据，供勾选
-POST   /api/targets             新增目标
-PUT    /api/targets/{id}        改目标
-DELETE /api/targets/{id}        删目标
-POST   /api/targets/{id}/test   发一条测试推送，返回 Bark 响应
-```
-
-#### 界面
-
-单页：目标列表（名称 / Bark 地址 / 启用开关 / 删除 / 测试推送）+ SKU 勾选区
-（按机型 → 颜色 → 容量分组，支持全选、按机型全选、搜索）+ 轮询设置（地点、间隔、抖动）+ 保存。
-范围：仅配置 + 测试推送，不做状态页/推送历史。
-
-#### 推送判定
-
-- **首次加入检测**：该目标推送**一次全量状态**（它关注的 SKU × 全部 6 家门店，含无货），
-  标记写入 `data/init.json`；推送失败则不落标记，下一轮重试首轮全量推送
-- **此后**：只在状态变化时推送 —— `unavailable → available`（已补货）或
-  `available → unavailable`（已售完，由 `notify_on` 控制是否开启）
-- 每个目标**独立判断**：只在自己的 `parts` 内比对状态
-- 多条变化可按 `push_mode` 汇总成一条，或按门店拆成多条
-- Bark 地址按用户填的 URL 原样 POST JSON，自托管 Bark 同样适用
-
-#### 默认参数
-
-轮询 120s + 0~30s 抖动（下限 60s）；web 绑 `127.0.0.1:8787`，不对外暴露（Bark key 不外泄）。
-
-#### 实施顺序
+#### 实施顺序（已完成）
 
 - **M2a 后端骨架**：抽 `browser.py`、`config.py`、`state.py`、`notifier.py`、`poller.py` + CLI，
   先用命令行跑通多目标推送
 - **M2b 界面**：`web.py` API + `static/index.html`
 - **M2c 收尾**：compose 双 service、`.gitignore`、`config.example.json`、README 用法、PLAN 更新
 
-#### 风险
+#### 阶段风险（当时的预估）
 
-| 风险 | 应对 |
+| 风险 | 应对 / 现状 |
 |---|---|
-| 界面与轮询同时改 config.json | 原子写；watcher 解析失败时沿用旧配置并记日志 |
-| 常驻后请求量增大触发风控 | 间隔 ≥60s + 抖动；每轮固定 3 批（已确认覆盖全港 6 店）；M3 加指数退避 |
-| Bark key 泄露 | config.json 不入库；web 只绑 127.0.0.1 |
+| 界面与轮询同时改 config.json | 原子写；watcher 解析失败时沿用旧配置并记日志（已落地） |
+| 常驻后请求量增大触发风控 | 间隔下限 30s（原案 60s）+ 抖动；每轮固定 3 批（已确认覆盖全港 6 店）；**M3 的指数退避尚未实现** |
+| Bark key 泄露 | config.json 不入库；web 实际绑 `0.0.0.0`，属 `SECURITY.md` 已知漏洞 1 |
 
 ### M3 — 稳健性
 
-cookie 失效自动重开购买页、指数退避重试、SIGTERM 优雅退出、结构化日志、健康检查。
+cookie 失效自动重开购买页、**指数退避重试**、SIGTERM 优雅退出、结构化日志、健康检查。
+
+> 状态：**🔄 进行中**（分支 `feat/watchdog-hardening`，PR #3）。已落地：子进程隔离、
+> SIGTERM 优雅退出、健康检查与告警、失败重试阶梯、profile 重建护栏、僵尸进程回收。
+> **未做**：指数退避（当前是固定最多 3 次尝试、重试间无退避）。
+> 机制说明见 `docs/architecture.md` 第 5 节，不再在此展开。
 
 ## 6. 尚待确认
 
@@ -283,6 +245,18 @@ cookie 失效自动重开购买页、指数退避重试、SIGTERM 优雅退出�
 |---|---|---|
 | headless / 指纹被识别 | 方案根基失效 | M0 实测解决：CDP 覆盖 UA + Client Hints；退路 headful+Xvfb 保留 |
 | 冷启动 541 污染 profile | 该 profile 持续 541 | M1 已实现：全批失败时重建 profile 重试 |
-| 轮询触发限流 | IP 被封、数据失真 | M3 退避；间隔待压测 |
+| 轮询触发限流 | IP 被封、数据失真 | M3 退避（**尚未实现**，当前重试无退避）；间隔待压测 |
 | 接口只有状态没有台数 | 无法做"剩余 N 台"告警 | 已确认 Apple 不公开；如需台数需另找数据源 |
 | 基础镜像 tag 漂移 | 构建不可复现 | 钉死版本号 |
+
+### 7.1 M3 追加的风险与回滚
+
+| 风险 | 影响 | 应对 / 现状 |
+|---|---|---|
+| `start_new_session=True` 的进程组归属 | 若 `os.getpgid(pid) != pid`，`killpg` 会打到父进程自己的组，当场把服务打死 | 已确认 worker 自成组长；另加一层保险：worker 绝不写任何持久状态文件 |
+| rebuild_profile 误触发 → 永久 541 | 每轮都重建、不停丢 cookie 的死循环 | LevelDB 特征串是**未经本机实测的推断**（本地不启真实浏览器）；先用备份的 profile 副本打出真实 stderr 再确认。24h 预算钉成硬闸 |
+| `health_webhook` 被静默清空 | 用户一保存配置就抹掉告警地址，而那恰好是最该告警的时刻 | 前端必须同步这个字段；已列入 `README.md` 验证清单第 6 步 |
+| **僵尸进程撑满 PID cgroup** | 连 `fork` 都失败 → 反复 `START_FAILED`，监控静默失效 | **已真实发生**（累积 9349 个僵尸）：容器 PID 1 从不 `wait()` 被 reparent 的 chromium。已修：`reap_orphans()` + worker 设为 subreaper。详见 `docs/architecture.md` 5.5 |
+| 浏览器挂死 | 主循环永久阻塞 | 硬超时 225s + 整组 `killpg`（M3 已落地） |
+
+**回滚**：切回 `origin/main`。

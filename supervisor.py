@@ -143,6 +143,28 @@ def interrupt_worker(reason=""):
     kill_worker_group(proc)
 
 
+def reap_orphans():
+    """回收所有已死的孤儿子进程（详见下方调用处的事故说明）。
+
+    容器里 `main.py poll` 是 PID 1。worker 用 start_new_session 自成进程组，
+    chromium 是它的后代；worker 一退出，chromium 就被内核 reparent 到 PID 1。
+    若 PID 1 从不 wait，这些死掉的 chromium 就永远挂成僵尸，把 PID cgroup 一点点
+    撑满，最终连 fork 都失败（Resource temporarily unavailable / Cannot fork），
+    表现为反复 START_FAILED 的死亡螺旋。这里在每轮结束后扫一遍死掉的子进程回收掉，
+    防止无限累积。
+
+    为什么安全：本函数只在 worker 已被 proc.wait 回收之后调用，所以不会误收 worker
+    本身；它只回收「worker 退出后残留的 chromium 孤儿」。
+    """
+    try:
+        while True:
+            pid, _ = os.waitpid(-1, os.WNOHANG)
+            if pid == 0:  # 没有更多死掉的子进程了
+                break
+    except ChildProcessError:  # 当前没有任何子进程可回收
+        pass
+
+
 def _spawn(cmd, spec_path, out_path):
     return subprocess.Popen(
         cmd + ["--spec", spec_path, "--out", out_path],
@@ -175,6 +197,9 @@ def _run_once(profile, parts, location, executable, data_dir, timeout):
             result.kind, result.error = "TIMEOUT", f"worker 超过 {timeout}s 未完成"
         code = proc.returncode
         result.exit_code = code if code is not None else -1
+        # worker 已被 proc.wait 回收；此刻它残留的 chromium 孤儿已 reparent 到本进程
+        # （PID 1），趁热回收掉，否则会累积成僵尸撑满 PID cgroup（见 reap_orphans）。
+        reap_orphans()
         result.round_ms = int((time.time() - started) * 1000)
     finally:
         _ACTIVE["proc"] = None

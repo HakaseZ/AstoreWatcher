@@ -208,8 +208,27 @@ class BrowserSession:
         finally:
             if self._pw:
                 self._pw.stop()
+            # 回收可能残留的 chromium 孙进程。worker 进程已设为 subreaper，chromium
+            # 退出后会 reparent 到本进程，这里 waitpid 一下避免它们变成僵尸无限累积
+            # （撑满 PID cgroup 后连 fork 都失败，表现为反复 START_FAILED）。
+            self._reap_children()
             self.ctx = None
             self._pw = None
+
+    @staticmethod
+    def _reap_children():
+        """回收本进程下已死的子/孙进程（chromium 崩溃后残留的僵尸）。
+
+        仅 best-effort：waitpid(-1, WNOHANG) 只回收「已经死掉」的进程，
+        活着的 chromium 不会被误伤；没有任何可回收子进程时 ChildProcessError 被忽略。
+        """
+        try:
+            while True:
+                pid, _ = os.waitpid(-1, os.WNOHANG)
+                if pid == 0:
+                    break
+        except ChildProcessError:
+            pass
 
     def rebuild_profile(self):
         """把疑似损坏的 profile 目录移走备份（冷启动持续 541 时必须丢弃重建）。

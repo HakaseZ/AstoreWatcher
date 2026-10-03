@@ -344,6 +344,23 @@ def run(spec, out_path):
     return code
 
 
+def _become_subreaper():
+    """让自己成为子进程回收者（PR_SET_CHILD_SUBREAPER=36）。
+
+    worker 是唯一会启动 chromium 的进程。chromium 经 Playwright 的 node 驱动成为
+    本进程的「孙进程」；若本进程不是 subreaper，chromium 退出后会 reparent 到容器
+    PID 1 且无人回收，变成僵尸累积（详见 supervisor.reap_orphans 的事故说明）。
+    设为 subreaper 后，chromium 改 reparent 到本进程，由 BrowserSession.close() 里的
+    waitpid 回收；即便 worker 被 SIGKILL，残留孤儿也会由 supervisor（PID 1）兜底回收。
+    """
+    try:
+        import ctypes
+        libc = ctypes.CDLL("libc.so.6", use_errno=True)
+        libc.prctl(36, 1, 0, 0, 0)
+    except Exception:
+        pass
+
+
 def main(argv=None):
     parser = argparse.ArgumentParser(prog="worker.py")
     parser.add_argument("--spec", required=True, help="父进程写的请求 JSON 路径")
@@ -353,6 +370,7 @@ def main(argv=None):
     logging.basicConfig(level=logging.INFO,
                         format="%(asctime)s %(levelname)s [worker] %(message)s")
     install_signal_handler()
+    _become_subreaper()
 
     started = time.time()
     try:

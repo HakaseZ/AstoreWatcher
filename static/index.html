@@ -667,6 +667,7 @@
   });
 
   loadAll().then(function () {
+    loadHealth();                    // 打开页面立刻显示健康状态，不等首个 60s 轮询
     setInterval(loadHealth, 60000);  // 界面常开时持续显示死活，不用手动刷新
   });
 })();

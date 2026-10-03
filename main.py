@@ -58,6 +58,11 @@ def cmd_once(args):
         for f_ in failed:
             print(f"  HTTP {f_['status']}：{f_['parts'][0]} … {f_['parts'][-1]}", file=sys.stderr)
         return 1
+    # 进程级故障（启动失败、崩溃、超时…）走的是 worker._fail，结果是 failed=[]，
+    # 上面那个分支抓不到。若不在这里判 result.ok，`main.py once` 会在整轮失败时
+    # 返回 0 —— 排障脚本因此以为成功了。
+    if not result.ok:
+        return 1
     return 0
 
 

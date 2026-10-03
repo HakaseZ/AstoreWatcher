@@ -326,13 +326,21 @@ class BuildMessagesTest(unittest.TestCase):
         self.assertTrue(title)
 
     def test_merged_same_sku_multi_store_one_line(self):
-        """同一 SKU 多家门店补货 → 一行「可取貨：A、B」，不再每家店重复一遍型号名。"""
+        """同一 SKU 多家门店补货 → 一行「可取貨：A、B」，不再每家店重复一遍型号名；
+        且每家店要带上自己的 quote（如「備妥於： 今日」），否则看不出什么时候能取。"""
         changes = [
             {"part": "MJXV4ZA/A", "store": "ifc mall", "to": "available", "quote": "今日可取"},
-            {"part": "MJXV4ZA/A", "store": "Causeway Bay", "to": "available", "quote": "今日可取"},
+            {"part": "MJXV4ZA/A", "store": "Causeway Bay", "to": "available", "quote": "明日可取"},
         ]
         _, body, _ = notifier.build_messages({"push_mode": "merged"}, changes, SKU_META)[0]
-        self.assertEqual(body.split("\n")[1], "可取貨：Apple 中環、Apple 銅鑼灣")
+        self.assertEqual(body.split("\n")[1],
+                         "可取貨：Apple 中環（今日可取）、Apple 銅鑼灣（明日可取）")
+
+    def test_merged_skips_quote_when_absent(self):
+        """没有 quote 时不能拼出空的括号，只显示店名。"""
+        changes = [{"part": "MJXV4ZA/A", "store": "ifc mall", "to": "available"}]
+        _, body, _ = notifier.build_messages({"push_mode": "merged"}, changes, SKU_META)[0]
+        self.assertEqual(body.split("\n")[1], "可取貨：Apple 中環")
 
     def test_merged_availability_split_into_two_lines(self):
         """一店补货、一店售完 → 拆成「可取貨：」与「暫無供應：」两行。"""

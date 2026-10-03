@@ -144,7 +144,10 @@ def _sku_block(part, items, sku_meta):
     """
     lines = [_sku_label(part, sku_meta)]
     for to, label in (("available", "可取貨"), ("unavailable", "暫無供應")):
+        # 带上每条变化的 quote（如「備妥於： 今日」，来自 Apple 的 pickupSearchQuote，
+        # 由 state.diff 透传过来）：丢掉它就只剩「可取貨」和店名，看不出什么时候能取。
         stores = [config_mod.to_display(c.get("store"))
+                  + (f"（{c.get('quote')}）" if c.get("quote") else "")
                   for c in items if c.get("to") == to]
         if stores:
             lines.append(f"{label}：{'、'.join(stores)}")

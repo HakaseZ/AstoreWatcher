@@ -293,7 +293,9 @@ class HealthTest(unittest.TestCase):
                 self.health.record(ok=False, kind="FETCH_CRASHED")
             self.health.maybe_alert(self._cfg(webhook))
             self.assertEqual(send.call_count, 1)
-            self.health.record(ok=False, kind="FETCH_CRASHED")  # 落盘节流时刻
+            # 刻意不再补一次 record()：record 也会写 last_alert_epoch，补了的话
+            # 即使 maybe_alert 不再自己落盘，这条用例照样能过 —— 那就没守住
+            # _persist_alert_state 这条路径了。所以紧接着就重启。
 
             restarted = supervisor.Health(self.data)  # 模拟容器重启
             restarted.record(ok=False, kind="FETCH_CRASHED")   # 故障仍在持续

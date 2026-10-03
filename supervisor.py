@@ -34,6 +34,8 @@ TERM_GRACE_SEC = 5
 
 MAX_ATTEMPTS = 3
 REBUILD_MAX_PER_DAY = 1
+# 保留最近几份损坏 profile 备份（.corrupt-*），防止无限堆积，见 _prune_profile_backups
+PROFILE_BACKUP_KEEP = 3
 
 # worker 退码的对端常量。刻意不 import worker（它会拉起 playwright），保持本模块无浏览器依赖。
 EXIT_OK = 0
@@ -125,8 +127,13 @@ def kill_worker_group(proc, grace=TERM_GRACE_SEC):
             os.killpg(os.getpgid(proc.pid), signal.SIGKILL)
         except (ProcessLookupError, PermissionError, OSError):
             proc.kill()
-    while proc.poll() is None:
+    # SIGKILL 后进程必然退出，但仍给这个循环一个 deadline：万一它卡在不可中断
+    # 状态（D state），无时限的自旋会把整个主循环永久钉死在这里。
+    hard_deadline = time.time() + grace
+    while proc.poll() is None and time.time() < hard_deadline:
         time.sleep(0.1)
+    if proc.poll() is None:
+        log.error("worker 在 SIGKILL 后 %ss 仍未退出（可能卡在不可中断状态），放弃等待", grace)
 
 
 def interrupt_worker(reason=""):
@@ -201,30 +208,27 @@ def _run_once(profile, parts, location, executable, data_dir, timeout):
         # （PID 1），趁热回收掉，否则会累积成僵尸撑满 PID cgroup（见 reap_orphans）。
         reap_orphans()
         result.round_ms = int((time.time() - started) * 1000)
+
+        try:
+            with open(out_path, encoding="utf-8") as f:
+                payload = json.load(f)
+        except FileNotFoundError:
+            # 连 out 都没写出来 —— worker 在写完之前就死了（SIGKILL / OOM / 断电）
+            result.kind = result.kind or "NO_RESULT"
+            result.error = result.error or f"worker 未产出结果（退出码 {result.exit_code}）"
+            return result, None
+        except ValueError as e:
+            result.kind, result.error = "BAD_RESULT", f"worker 输出不是合法 JSON：{e}"
+            return result, None
     finally:
         _ACTIVE["proc"] = None
-        for path in (spec_path,):
+        # spec / out 都落在 /data 里，必须任何一条返回路径都清掉 —— 包括
+        # proc.wait 抛出 TimeoutExpired 之外的异常时，否则 .round-*.json 会越积越多。
+        for path in (spec_path, out_path):
             try:
                 os.unlink(path)
             except OSError:
                 pass
-
-    try:
-        with open(out_path, encoding="utf-8") as f:
-            payload = json.load(f)
-    except FileNotFoundError:
-        # 连 out 都没写出来 —— worker 在写完之前就死了（SIGKILL / OOM / 断电）
-        result.kind = result.kind or "NO_RESULT"
-        result.error = result.error or f"worker 未产出结果（退出码 {result.exit_code}）"
-        return result, None
-    except ValueError as e:
-        result.kind, result.error = "BAD_RESULT", f"worker 输出不是合法 JSON：{e}"
-        return result, None
-    finally:
-        try:
-            os.unlink(out_path)
-        except OSError:
-            pass
 
     result.snapshot = payload.get("snapshot") or {}
     result.failed = payload.get("failed") or []
@@ -278,11 +282,35 @@ def discard_profile(profile, data_dir):
     try:
         os.replace(profile, backup)  # 同目录 rename，原子；保留 cookie 供人工捞回
         log.warning("profile 疑似损坏，已备份为 %s 并准备冷启动重建", backup)
+        _prune_profile_backups(profile)
         return backup
     except OSError as e:
         log.error("备份 profile 失败（%s），退化为直接删除", e)
         shutil.rmtree(profile, ignore_errors=True)
         return None
+
+
+def _prune_profile_backups(profile, keep=PROFILE_BACKUP_KEEP):
+    """只保留最近的 keep 份 `.corrupt-*` 备份，其余删掉。
+
+    备份是给人工捞回 shield cookie 的机会，不能全删 —— 只淘汰最旧的。之所以需要
+    淘汰：旧的备份从来没人清理，而单个 profile 约 30MB，按「每天最多重建一次」
+    算一年能堆到十几 GB，属于慢性的无界增长。时间戳后缀按字典序即等于按时间序。
+    """
+    base = os.path.basename(os.path.normpath(profile))
+    directory = os.path.dirname(os.path.abspath(profile)) or "."
+    try:
+        names = sorted(n for n in os.listdir(directory)
+                       if n.startswith(base + ".corrupt-"))
+    except OSError:
+        return
+    for old in names[:-keep] if keep > 0 else names:
+        path = os.path.join(directory, old)
+        try:
+            shutil.rmtree(path, ignore_errors=True)
+            log.info("清理旧 profile 备份（只保留最近 %d 份）：%s", keep, old)
+        except OSError as e:
+            log.warning("清理旧 profile 备份 %s 失败：%s", old, e)
 
 
 # ---------------------------------------------------------------- 一轮对外接口

@@ -110,8 +110,13 @@ docker compose exec watcher python3 main.py once   # 走同一条 supervisor/wor
 1. **先在界面填好「告警推送地址」** —— 没有它就收不到任何告警，只能靠 docker healthcheck。
 2. `docker compose up -d`，观察首轮能否取到数据（`GET /api/health` 的 `last_success_at` 开始滚动，
    或日志出现 `本轮完成：N 个 SKU`）。
-3. **验证告警**：人为制造失败（如 `docker compose exec watcher mv /usr/bin/chromium /tmp/`），
-   确认连续 3 轮失败后收到 Bark 告警，**恢复后**再收到一条「已恢复正常」。
+3. **验证告警（**⚠️ **只在临时/可丢弃环境做，勿直接在生产跑）**：人为制造取数失败，
+   例如 `docker compose exec watcher mv /usr/bin/chromium /tmp/`（会让每轮 `START_FAILED`、可重试）。
+   确认连续 3 轮失败后收到 Bark 告警、**恢复后**再收到一条「已恢复正常」。
+   **注意**：这条只验证「连续失败 → 告警 → 恢复」的阈值与节流，与 profile 损坏后的
+   「三轮重建」路径无关（那条由 profile 损坏检测触发，不是二进制缺失）。
+   **测试后立即恢复**：`docker compose exec watcher mv /tmp/chromium /usr/bin/`；
+   若恢复失败，直接 `docker compose up -d watcher` 用干净镜像重建容器（`data/` 卷不受影响）。
 4. **验证优雅退出**：`time docker compose stop watcher` 应在数秒内干净退出；
    然后检查 `data/profile/` 里**没有残留 SingletonLock** —— 这是清理是否真正闭环的判据。
 5. `docker inspect` 看 watcher 的健康状态是否为 healthy。

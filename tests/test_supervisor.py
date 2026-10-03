@@ -281,6 +281,25 @@ class HealthTest(unittest.TestCase):
         restarted.record(ok=False, kind="FETCH_CRASHED")
         self.assertEqual(supervisor.load_health(self.data)["consecutive_failures"], 3)
 
+    def test_alert_throttle_survives_restart(self):
+        """last_alert_at 也要跨重启恢复。
+
+        只恢复 failures 而把 last_alert_at 留在 0 的话，重启后「距上次告警是否已过
+        节流窗口」的判断必然成立 —— 故障还在持续，30 分钟窗口内却被重复告警。
+        """
+        webhook = "https://api.day.app/hook"
+        with mock.patch.object(supervisor.notifier, "send", return_value=(True, "ok")) as send:
+            for _ in range(supervisor.HEALTH_ALERT_AFTER):
+                self.health.record(ok=False, kind="FETCH_CRASHED")
+            self.health.maybe_alert(self._cfg(webhook))
+            self.assertEqual(send.call_count, 1)
+            self.health.record(ok=False, kind="FETCH_CRASHED")  # 落盘节流时刻
+
+            restarted = supervisor.Health(self.data)  # 模拟容器重启
+            restarted.record(ok=False, kind="FETCH_CRASHED")   # 故障仍在持续
+            restarted.maybe_alert(self._cfg(webhook))
+            self.assertEqual(send.call_count, 1)  # 节流窗口内不应再发
+
     def test_alert_failure_never_raises(self):
         """告警自身的任何异常都不能把主循环拖垮。"""
         for _ in range(supervisor.HEALTH_ALERT_AFTER):

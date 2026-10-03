@@ -132,6 +132,12 @@ def _fail(out_path, code, kind, error):
 
 # ---------------------------------------------------------------- 环境预检
 
+def default_executable(spec_executable=None):
+    """spec 没指定时用 CHROMIUM_BIN / chromium —— 必须与 BrowserSession 的默认值一致，
+    否则预检会拿着 None 去判「可执行文件不可用」，把能正常启动的浏览器挡在门外。"""
+    return spec_executable or os.environ.get("CHROMIUM_BIN", "chromium")
+
+
 def resolve_executable(executable):
     """把 executable 解析成可执行文件路径；不可用则返回 None。"""
     if not executable:
@@ -296,7 +302,7 @@ def run(spec, out_path):
     profile = spec["profile"]
     location = spec.get("location") or config_mod.DEFAULT_LOCATION
     parts = spec.get("parts") or []
-    executable = spec.get("executable")
+    executable = default_executable(spec.get("executable"))
 
     kind, message = precheck(profile, executable)
     if kind:

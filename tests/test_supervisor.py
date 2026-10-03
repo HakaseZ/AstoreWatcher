@@ -258,6 +258,41 @@ class HealthTest(unittest.TestCase):
             self.health.maybe_alert(self._cfg("https://hook"))
 
 
+class WiringTest(unittest.TestCase):
+    """只会在容器里暴露、本地测试根本碰不到的接线错误。
+
+    本地跑测试用的是假 worker，既不导入真实的 browser 模块，也不碰 chromium，
+    所以「镜像里少了文件」「可执行文件兜底不一致」这两类坑必须靠断言守住 ——
+    两个都是真的踩过：browser.py 被漏出 COPY 列表、executable 没走 CHROMIUM_BIN。
+    """
+
+    def setUp(self):
+        self.root = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+        self.tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(self.tmp.cleanup)
+
+    def test_dockerfile_copies_every_python_module(self):
+        copied = set()
+        with open(os.path.join(self.root, "Dockerfile"), encoding="utf-8") as f:
+            for line in f:
+                line = line.strip()
+                if line.startswith("COPY "):
+                    copied.update(a for a in line.split()[1:-1] if a.endswith(".py"))
+        needed = {n for n in os.listdir(self.root) if n.endswith(".py")}
+        self.assertEqual(needed - copied, set(),
+                         f"Dockerfile 漏 COPY 了：{sorted(needed - copied)}")
+
+    def test_executable_falls_back_like_browser_session(self):
+        """spec 没给 executable 时必须退回 CHROMIUM_BIN，且这个值要能通过预检 ——
+        否则会误报「chromium 不可用」，把好端端的浏览器挡在门外。"""
+        profile = os.path.join(self.tmp.name, "profile")
+        with mock.patch.dict(os.environ, {"CHROMIUM_BIN": "/bin/sh"}):
+            self.assertEqual(worker.default_executable(None), "/bin/sh")
+            self.assertEqual(worker.default_executable("/custom/chromium"), "/custom/chromium")
+            kind, msg = worker.precheck(profile, worker.default_executable(None))
+            self.assertIsNone(kind, msg)
+
+
 class SingletonLockTest(unittest.TestCase):
     """上次事故的直接成因：容器 hostname 漂移导致 SingletonLock 永久失效。"""
 

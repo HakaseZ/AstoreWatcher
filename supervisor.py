@@ -102,6 +102,23 @@ def _atomic_write_json(path, payload):
         raise
 
 
+def _group_alive(pgid):
+    """进程组里还有没有活着的进程。
+
+    用 signal 0 只做存在性检查、不真的发信号。整组为空时内核返回 ESRCH
+    （ProcessLookupError）—— 这正是「chromium 也已退干净」的判据。
+    """
+    if pgid is None:
+        return False
+    try:
+        os.killpg(pgid, 0)
+    except ProcessLookupError:
+        return False
+    except (PermissionError, OSError):
+        return True
+    return True
+
+
 def kill_worker_group(proc, grace=TERM_GRACE_SEC):
     """掐断 worker 及其整棵进程树（chromium 在内）。
 
@@ -128,8 +145,15 @@ def kill_worker_group(proc, grace=TERM_GRACE_SEC):
         os.killpg(pgid, signal.SIGTERM)
     except (ProcessLookupError, PermissionError, OSError):
         proc.terminate()
+    # 等到 grace 用完，或「整组都退干净」为止。
+    # 判据不能只是 worker 自己退出：worker 完全可能先走，而 chromium 还在做 teardown
+    # （flush profile 的 LevelDB、干净释放 SingletonLock）。那时提前 SIGKILL 就等于打断
+    # 它的收尾 —— 后果和「一上来就 SIGKILL」一样：下次启动踩到陈旧锁或 LevelDB 损坏，
+    # 正是这个函数想避免的故障。反过来，整组已经空了就没必要干等到 grace 用完。
     deadline = time.time() + grace
-    while time.time() < deadline and proc.poll() is None:
+    while time.time() < deadline:
+        if proc.poll() is not None and not _group_alive(pgid):
+            break
         time.sleep(0.1)
     if pgid is not None:
         # 整组已退干净时这里会拿到 ESRCH，忽略即可 —— 那正是我们要的结果。

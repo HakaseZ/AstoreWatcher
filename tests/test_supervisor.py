@@ -275,6 +275,35 @@ class HealthTest(unittest.TestCase):
             self.health.maybe_alert(self._cfg("https://hook"))
 
 
+class KillWorkerGroupTest(unittest.TestCase):
+    """超时/中断时的清理必须保证「整棵进程树都死」，而不只是 worker 自己死了。"""
+
+    def test_group_sigkill_sent_even_if_worker_exited(self):
+        """worker 响应 SIGTERM 自己退出、chromium 子进程却还活着时，仍要补一发整组 SIGKILL。
+
+        若把 SIGKILL 的升级条件写成「worker 还没退出」，这种情形下就会跳过整组 SIGKILL：
+        残留的 chromium 继续持有 profile，下一轮 worker 检测到活进程 → 报 LOCK_LIVE
+        且**不重试**，监控就此卡死。
+        """
+        calls = {"n": 0}
+
+        def poll():
+            calls["n"] += 1
+            return None if calls["n"] == 1 else 0  # 第一次还活着，之后已退出
+
+        proc = mock.Mock()
+        proc.pid = 4242
+        proc.poll.side_effect = poll
+
+        with mock.patch.object(supervisor.os, "getpgid", return_value=4242), \
+             mock.patch.object(supervisor.os, "killpg") as killpg:
+            supervisor.kill_worker_group(proc, grace=0.2)
+
+        killpg.assert_any_call(4242, supervisor.signal.SIGTERM)
+        # 关键：worker 已经退出（poll 返回 0）也照样要发给整组
+        killpg.assert_any_call(4242, supervisor.signal.SIGKILL)
+
+
 class WiringTest(unittest.TestCase):
     """只会在容器里暴露、本地测试根本碰不到的接线错误。
 

@@ -109,24 +109,36 @@ def kill_worker_group(proc, grace=TERM_GRACE_SEC):
     干净释放 SingletonLock 并 flush profile 的 LevelDB；直接 SIGKILL 会下一次
     启动就踩到陈旧锁或 LevelDB 损坏 —— 等于自己制造我们要修的那个故障。
     但 TERM 必须限时，因为挂死的 chromium 根本不响应 TERM。
+
+    最后那发 SIGKILL **无条件发给整个进程组**，不看 worker 自己有没有退出：
+    worker 完全可能响应 SIGTERM 后正常退出，而它的 chromium 子进程还活着。
+    那时若因为「worker 已经死了」就跳过整组 SIGKILL，残留的 chromium 会继续持有
+    profile，下一轮 worker 检测到活进程直接报 LOCK_LIVE 并且**不重试** ——
+    监控就此卡死，正是设计上要避免的。
     """
     if proc is None or proc.poll() is not None:
         return
+    pgid = None
     try:
         pgid = os.getpgid(proc.pid)
         # start_new_session=True 保证 worker 自成进程组领导（pgid == pid），
         # 因此这里 killpg 不会误伤父进程自己所在的组。
+        # 先把 pgid 存下来：worker 退出后 proc.pid 就没了，那时再取 pgid 会失败，
+        # 于是整组 SIGKILL 根本发不出去（正是上面那个坑）。
         os.killpg(pgid, signal.SIGTERM)
     except (ProcessLookupError, PermissionError, OSError):
         proc.terminate()
     deadline = time.time() + grace
     while time.time() < deadline and proc.poll() is None:
         time.sleep(0.1)
-    if proc.poll() is None:
+    if pgid is not None:
+        # 整组已退干净时这里会拿到 ESRCH，忽略即可 —— 那正是我们要的结果。
         try:
-            os.killpg(os.getpgid(proc.pid), signal.SIGKILL)
+            os.killpg(pgid, signal.SIGKILL)
         except (ProcessLookupError, PermissionError, OSError):
-            proc.kill()
+            pass
+    elif proc.poll() is None:
+        proc.kill()
     # SIGKILL 后进程必然退出，但仍给这个循环一个 deadline：万一它卡在不可中断
     # 状态（D state），无时限的自旋会把整个主循环永久钉死在这里。
     hard_deadline = time.time() + grace

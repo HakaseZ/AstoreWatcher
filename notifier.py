@@ -28,13 +28,38 @@ MAX_LISTED = 5
 DETAIL_LIMIT = 200
 
 
-def send(bark_url, title, body, *, group="AstoreWatcher", icon=None, level=None, is_archive=None, url=None):
+def checked_line(checked_at):
+    """推送正文末尾的检查时间行。
+
+    语义是**取数时刻**而不是推送时刻：同一份 snapshot 会分发给多个目标，各次推送
+    之间相隔十几秒，但它们的检查时刻必须是同一个（该时刻由 worker 在取数完成时算出）。
+    """
+    return f"檢查時間：{checked_at}" if checked_at else ""
+
+
+def with_checked_at(body, checked_at):
+    """把检查时间追加到正文末尾。
+
+    刻意放在**发送层**而不是 format_snapshot / build_messages 那些纯文案函数里：
+    纯文案函数保持纯净可断言（tests/test_notifier.py 里的严格相等断言都打在它们身上），
+    时间戳只在实际要发出去的那一刻才拼上去。
+    """
+    line = checked_line(checked_at)
+    if not line:
+        return body or ""
+    base = body or ""
+    return f"{base}\n{line}" if base else line
+
+
+def send(bark_url, title, body, *, group="AstoreWatcher", icon=None, level=None,
+         is_archive=None, url=None, checked_at=None):
     """POST JSON 到 Bark，返回 (是否成功, 响应文本片段或错误信息)。
 
     payload 只包含非空字段：title / body / group / icon / level / isArchive / url。
     url 为点击通知横幅跳转的地址（无货→有货时带下单页）。
+    checked_at 为本次数据的检查时刻（"%Y-%m-%d %H:%M"），追加到正文末尾。
     """
-    payload = {"title": title or "", "body": body or ""}
+    payload = {"title": title or "", "body": with_checked_at(body, checked_at)}
     if group:
         payload["group"] = group
     if icon:
@@ -98,7 +123,11 @@ def _model_of(part, sku_meta):
 
 
 def _change_line(change, sku_meta):
-    """一条变化的正文：含型号全称 + 门店 + 状态。"""
+    """一条变化的正文：含型号全称 + 门店 + 状态。
+
+    保留给 format_change 这类「一次只推一条」的场景；merged 模式下的多条编排
+    走 _sku_block（会把同一 SKU 的多家门店合并进同一行）。
+    """
     store = change.get("store") or ""
     to = change.get("to") or ""
     quote = change.get("quote") or ""
@@ -107,12 +136,31 @@ def _change_line(change, sku_meta):
     return f"{_sku_label(change.get('part'), sku_meta)}\n門店：{config_mod.to_display(store)}\n狀態：{quote}"
 
 
+def _sku_block(part, items, sku_meta):
+    """一个 SKU 的变化块：型号一行 + 有货门店一行 + 无货门店一行。
+
+    同一 SKU 在多家门店的变化合并进同一行，而不是每家门店重复一遍型号名 ——
+    三家店同时补货原本要 9 行，现在 2 行就看得完。
+    """
+    lines = [_sku_label(part, sku_meta)]
+    for to, label in (("available", "可取貨"), ("unavailable", "暫無供應")):
+        # 带上每条变化的 quote（如「備妥於： 今日」，来自 Apple 的 pickupSearchQuote，
+        # 由 state.diff 透传过来）：丢掉它就只剩「可取貨」和店名，看不出什么时候能取。
+        stores = [config_mod.to_display(c.get("store"))
+                  + (f"（{c.get('quote')}）" if c.get("quote") else "")
+                  for c in items if c.get("to") == to]
+        if stores:
+            lines.append(f"{label}：{'、'.join(stores)}")
+    return "\n".join(lines)
+
+
 def _merged_messages(changes, sku_meta, order_url):
     """merged 模式：按型号分组，每个型号一条推送（多型号 → 多条）。
 
+    - 同一 SKU 的多家门店合并到一行（见 _sku_block），多个 SKU 各占一段
     - 某型号下只有一个 SKU 变动 → 标题用完整型号（型号+颜色+容量）
-    - 某型号下多个 SKU 变动 → 标题用型号名，正文逐条列出
-    - 每条最多列 MAX_LISTED 条，超出补「等 N 條」
+    - 某型号下多个 SKU 变动 → 标题用型号名
+    - 每条最多列 MAX_LISTED 个 SKU，超出补「等 N 條」
     - 该型号分组内有任意「有货」变动时，附 order_url（点横幅去下单）
     """
     by_model = {}
@@ -127,47 +175,56 @@ def _merged_messages(changes, sku_meta, order_url):
     messages = []
     for m in order:
         items = by_model[m]
-        listed = items[:MAX_LISTED]
-        parts = {c.get("part") for c in items}
+        # 按 SKU 聚合：一个 SKU 一段，段内把它的各家门店合并成一行
+        parts = []
+        for c in items:
+            p = c.get("part")
+            if p not in parts:
+                parts.append(p)
+        listed = parts[:MAX_LISTED]
         if len(parts) == 1:
-            title = "您关注的 " + _sku_label(next(iter(parts)), sku_meta) + " 监测到库存变化"
+            title = "您关注的 " + _sku_label(parts[0], sku_meta) + " 监测到库存变化"
         else:
             title = f"您关注的 {m} 监测到库存变化"
-        body = "\n\n".join(_change_line(c, sku_meta) for c in listed)
-        if len(items) > len(listed):
-            body += f"\n\n等 {len(items) - len(listed)} 條"
+        body = "\n\n".join(_sku_block(p, [c for c in items if c.get("part") == p], sku_meta)
+                           for p in listed)
+        if len(parts) > len(listed):
+            body += f"\n\n等 {len(parts) - len(listed)} 條"
         url = order_url if any(c.get("to") == "available" for c in items) else None
         messages.append((title, body, url))
     return messages
 
 
 def _per_store_messages(changes, sku_meta, order_url):
-    """per_store 模式：按门店分条，每家门店一条，正文列该店所有变化的 SKU。
+    """per_store 模式：按「门店 + 方向」分条，一家店最多两条（有貨了 / 無貨了）。
 
-    该店只要有任意「有货」变动，就附 order_url（点横幅去下单）。
+    同一家店同时有补货和售罄时**必须拆成两条**：混在一条「有貨了」里、正文却夹着
+    「暫無供應」的 SKU，读的人根本不知道到底能不能去买。拆分后每条只含同一方向的
+    SKU，标题与正文一致。有货那条才带 order_url。
     """
-    order = []
+    stores = []
     by_store = {}
     for c in changes:
         store = c.get("store") or ""
         if store not in by_store:
-            by_store[store] = []
-            order.append(store)  # 保持门店出现顺序
-        by_store[store].append(c)
+            by_store[store] = {}
+            stores.append(store)  # 保持门店出现顺序
+        to = "available" if c.get("to") == "available" else "unavailable"
+        by_store[store].setdefault(to, []).append(c)
 
     messages = []
-    for store in order:
-        items = by_store[store]
-        # 该店只要有任意一个 SKU 有货，标题就算「有貨了」
-        has_available = any(c.get("to") == "available" for c in items)
-        title = f"{config_mod.to_display(store)} 有貨了" if has_available else f"{config_mod.to_display(store)} 無貨了"
-        lines = []
-        for c in items:
-            label = _sku_label(c.get("part") or "", sku_meta)
-            quote = c.get("quote") or ("可取貨" if c.get("to") == "available" else "暫無供應")
-            lines.append(f"{label}：{quote}")
-        url = order_url if has_available else None
-        messages.append((title, "\n".join(lines), url))
+    for store in stores:
+        for to in ("available", "unavailable"):  # 同一家店的两条相邻，有货在前
+            items = (by_store[store].get(to) or [])
+            if not items:
+                continue
+            title = (f"{config_mod.to_display(store)} 有貨了"
+                     if to == "available" else f"{config_mod.to_display(store)} 無貨了")
+            lines = [f"{_sku_label(c.get('part') or '', sku_meta)}："
+                     f"{c.get('quote') or ('可取貨' if to == 'available' else '暫無供應')}"
+                     for c in items]
+            url = order_url if to == "available" else None
+            messages.append((title, "\n".join(lines), url))
     return messages
 
 
@@ -190,8 +247,9 @@ def build_messages(target, changes, sku_meta):
 def format_snapshot(snapshot, parts, sku_meta, stores=None):
     """首次全量快照文案，返回 (title, body)。
 
-    每个 SKU 一行：有货门店列出 + 「其餘 N 店暫無供應」；全无货写「全部 N 店暫無供應」；
-    全有货写「全部 N 店可取貨」；没取到数据写「未取到數據」。
+    每个 SKU 一行：`{型号}：{N} 店可取貨：{店名}`（有货时**一律列出全部店名** ——
+    只说「N 店可取货」不知道该去哪家买）；全无货写「{N} 店暫無供應」；
+    没取到数据写「未取到數據」。
 
     stores 为勾选的门店名列表（来自 target["stores"]）；为空表示全部门店。
     """
@@ -207,14 +265,19 @@ def format_snapshot(snapshot, parts, sku_meta, stores=None):
         wanted = {config_mod.to_key(s) for s in stores}
         snapshot = {p: {s: e for s, e in (snapshot.get(p) or {}).items() if s in wanted}
                     for p in part_keys}
-        part_keys = [p for p in part_keys if snapshot.get(p)]
+        # 用 `p in snapshot` 而不是 `snapshot.get(p)`：后者会把「本轮没查到任何门店
+        # 数据」的 part 一并剔掉，于是那个 SKU 在推送里整行消失，用户分不清它是
+        # 「没货」还是「压根没查到」。门店已是必填，生产上永远走这条过滤分支。
+        # 保留它，让它落到下面的「未取到數據」。
+        part_keys = [p for p in part_keys if p in snapshot]
 
-    title = "正在为您监测 iPhone 库存，当前库存如下"
+    title = "正在为您监测库存，当前库存如下"
     lines = []
     for part in part_keys:
+        label = _sku_label(part, sku_meta)
         store_map = snapshot.get(part)
         if not isinstance(store_map, dict) or not store_map:
-            lines.append(f"{_sku_label(part, sku_meta)}：未取到數據")
+            lines.append(f"{label}：未取到數據")
             continue
 
         available = []
@@ -223,15 +286,12 @@ def format_snapshot(snapshot, parts, sku_meta, stores=None):
             if display == "available":
                 available.append(config_mod.to_display(store))
 
-        total = len(store_map)
-        label = _sku_label(part, sku_meta)
         if not available:
-            lines.append(f"{label}：全部 {total} 店暫無供應")
-        elif len(available) == total:
-            lines.append(f"{label}：全部 {total} 店可取貨")
+            lines.append(f"{label}：{len(store_map)} 店暫無供應")
         else:
-            lines.append(f"{label}：{'、'.join(available)} 可取貨；"
-                         f"其餘 {total - len(available)} 店暫無供應")
+            # 有货就把店名全列出来（门店上限 6 家，不设 MAX_LISTED）：
+            # 「N 店可取货」这句话对「该去哪家买」没有任何帮助。
+            lines.append(f"{label}：{len(available)} 店可取貨：{'、'.join(available)}")
 
     return title, "\n".join(lines)
 
@@ -258,12 +318,13 @@ def snapshot_has_available(snapshot, parts, stores=None):
     return False
 
 
-def push_target(target, changes, sku_meta):
+def push_target(target, changes, sku_meta, checked_at=None):
     """给一个目标推送一组变化，返回每条推送的 (ok, detail)。
 
     - target["enabled"] 为 False → 直接返回 []
     - 只推该目标 parts 内的变化（parts 为空表示全部）
     - 条数取决于 push_mode：merged 一条，per_store 每家门店一条
+    - checked_at 透传给每条推送（同一轮的不同目标共用同一个检查时刻）
     """
     if not target or not target.get("enabled"):
         return []
@@ -289,5 +350,6 @@ def push_target(target, changes, sku_meta):
     if not changes:
         return []
 
-    return [send(target.get("bark_url"), title, body, icon=APPLE_ICON, url=url)
+    return [send(target.get("bark_url"), title, body, icon=APPLE_ICON, url=url,
+                 checked_at=checked_at)
             for title, body, url in build_messages(target, changes, sku_meta)]

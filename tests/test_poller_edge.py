@@ -1,22 +1,21 @@
 #!/usr/bin/env python3
-"""poller.run_once 的边界逻辑集成测试（无浏览器 / 无网络）。
+"""poller.run_once 的边界逻辑集成测试（无浏览器 / 无网络 / 无子进程）。
 
-通过把 browser 模块替换成桩，直接验证：
-- 首次加入 → 全量推送；之后只推变化
-- edge A：已初始化目标新增 SKU → 只推该 SKU 当前状态，不重推已有 SKU
-- edge B：禁用 → 清除 init 标记；重新启用 → 再次全量推送
-- 必填守卫：parts 或 stores 为空的启用目标被跳过
-- 变动推送标题为「您关注的 {型号} 监测到库存变化」并按型号分组
+这套用例原本靠把 `browser` 模块换成桩来跑。poller 现在已不再接触 playwright ——
+浏览器操作全部搬到了 worker 子进程，spawn / 硬超时 / killpg / 重试那一摊由
+`supervisor.run_round` 负责（见 worker.py、supervisor.py）。所以这里改成桩掉
+`supervisor.run_round`：既保留「不启动真实浏览器」的前提，又仍然测到 run_once
+从取数到推送决策的完整链路。那条子进程边界本身由 tests/test_supervisor.py 覆盖。
 """
 
 import os
 import sys
 import tempfile
-import types
 import unittest
 from unittest import mock
 
-# 在导入 poller 之前装好 browser 桩，避免真实 playwright 依赖
+sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+
 _STORES = ["S0", "S1", "S2"]
 
 _AVAIL = {}  # {(part, store): "available"|"unavailable"}，由用例动态修改
@@ -33,31 +32,8 @@ def _make_snapshot(parts):
     return snap
 
 
-_fake_browser = types.ModuleType("browser")
-
-
-class FakeSession:
-    def __init__(self, profile, location=None, executable=None):
-        self.profile = profile
-        self.location = location
-
-    def start(self):
-        pass
-
-    def close(self):
-        pass
-
-    def rebuild_profile(self):
-        pass
-
-    def fetch_all(self, parts):
-        return _make_snapshot(parts), []
-
-
-_fake_browser.BrowserSession = FakeSession
-sys.modules["browser"] = _fake_browser
-
 import poller  # noqa: E402
+import supervisor  # noqa: E402
 import notifier  # noqa: E402
 import state as state_mod  # noqa: E402
 
@@ -78,13 +54,30 @@ class PollerEdgeTest(unittest.TestCase):
         _AVAIL[("P1", "S0")] = "available"  # 初始：P1 在 S0 有货
         self.captured = []
         self.captured_kw = []
+        self.forced_snapshot = None  # 置 set 后本轮强制返回该快照（模拟空响应）
 
         def _send(bark_url, title, body, **kw):
             self.captured.append((bark_url, title, body))
             self.captured_kw.append(kw)
             return (True, "ok")
 
-        notifier.send = _send
+        # 用 patch 而不是直接赋值：直接替换 notifier.send 会污染同进程内的其他用例
+        send = mock.patch.object(notifier, "send", side_effect=_send)
+        send.start()
+        self.addCleanup(send.stop)
+
+        def _run_round(profile, parts, location=None, executable=None,
+                       data_dir=None, timeout=None):
+            snapshot = self.forced_snapshot
+            if snapshot is None:
+                snapshot = _make_snapshot(parts)
+            return supervisor.RoundResult(
+                snapshot=snapshot, failed=[], checked_at="2026-10-01 17:32",
+                ok=bool(snapshot), exit_code=0, kind="OK", attempts=1, round_ms=123)
+
+        rounds = mock.patch.object(poller.supervisor, "run_round", side_effect=_run_round)
+        rounds.start()
+        self.addCleanup(rounds.stop)
 
     def tearDown(self):
         self.tmp.cleanup()
@@ -99,7 +92,7 @@ class PollerEdgeTest(unittest.TestCase):
 
     def _run(self, cfg):
         return poller.run_once(cfg, SKU_META, self.profile,
-                                self.state_path, self.init_path)
+                               self.state_path, self.init_path, data_dir=self.data)
 
     # ---- 1. 首次全量 + 之后只推变化 ----
     def test_first_full_then_only_changes(self):
@@ -107,7 +100,7 @@ class PollerEdgeTest(unittest.TestCase):
         self._run(self._cfg([t]))
         # 首次：一条「正在为您监测 iPhone 库存」全量推送
         self.assertEqual(len(self.captured), 1)
-        self.assertEqual(self.captured[0][1], "正在为您监测 iPhone 库存，当前库存如下")
+        self.assertEqual(self.captured[0][1], "正在为您监测库存，当前库存如下")
 
         # 状态未变 → 不再推送
         self._run(self._cfg([t]))
@@ -191,19 +184,19 @@ class PollerEdgeTest(unittest.TestCase):
 
     # ---- 5b. 首轮空快照护栏：未匹配到任何 SKU 不推送、不写 init，下轮重试 ----
     def test_first_full_empty_snapshot_no_push_no_init(self):
-        # 让本轮 snapshot 里完全没有目标关注的 P1（模拟苹果接口偶发空响应）
+        # 让本轮完全没有目标关注的 SKU（模拟苹果接口偶发空响应）
         t = self._target("t1", ["P1"], ["S0"])
-        snap = _make_snapshot(["P99"])  # P99 不在目标 parts 内
-        with mock.patch.object(FakeSession, "fetch_all", return_value=(snap, [])):
-            self._run(self._cfg([t]))
+        self.forced_snapshot = _make_snapshot(["P99"])  # P99 不在目标 parts 内
+        self._run(self._cfg([t]))
         # 不应有任何推送，且 init 标记不得写入（否则目标被锁死）
         self.assertEqual(len(self.captured), 0)
         self.assertNotIn("t1", state_mod.load_init(self.init_path))
 
         # 下一轮恢复正常数据 → 应触发首次全量推送并落标记
+        self.forced_snapshot = None
         self._run(self._cfg([t]))
         self.assertEqual(len(self.captured), 1)
-        self.assertEqual(self.captured[0][1], "正在为您监测 iPhone 库存，当前库存如下")
+        self.assertEqual(self.captured[0][1], "正在为您监测库存，当前库存如下")
         self.assertIn("t1", state_mod.load_init(self.init_path))
 
     # ---- 5. 多型号按型号分条 ----

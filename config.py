@@ -14,6 +14,17 @@ import json
 import os
 import tempfile
 import uuid
+from datetime import datetime, timedelta, timezone
+
+# 展示与推送一律用香港时区。worker 子进程只依赖 config，故常量放在这里，
+# 供 poller / worker / notifier / web 共用同一份定义（web 侧改为 re-export）。
+HK_TZ = timezone(timedelta(hours=8))
+
+
+def hk_now(fmt="%Y-%m-%d %H:%M"):
+    """返回香港时区当前时间的字符串，默认精确到分钟（如 '2026-10-01 17:32'）。"""
+    return datetime.now(HK_TZ).strftime(fmt)
+
 
 # 轮询地点：实测 location 只影响门店排序，不影响门店集合，写死中環即可
 DEFAULT_LOCATION = "中環"
@@ -76,6 +87,10 @@ def default_config():
     return {
         "location": DEFAULT_LOCATION,
         "interval_sec": DEFAULT_INTERVAL_SEC,
+        # 运维告警地址（独立 Bark URL）：Watcher 自身失联/连续失败时推送，
+        # 与各推送目标的 bark_url 解耦，避免 silence failure 与运维消息混进业务推送流。
+        # 留空表示不推送告警（配置页会显示提示）。
+        "health_webhook": "",
         "targets": [],
     }
 
@@ -95,6 +110,11 @@ def _clamp_int(value, default, minimum):
     except (TypeError, ValueError):
         return default
     return max(minimum, num)
+
+
+def _normalize_url(value):
+    """规范化 URL 字段：非字符串或空白 → 空串（表示未配置）。"""
+    return value.strip() if isinstance(value, str) else ""
 
 
 def _normalize_notify_on(raw):
@@ -197,6 +217,7 @@ def validate(cfg, valid_parts=None):
     return {
         "location": location,
         "interval_sec": _clamp_int(raw.get("interval_sec"), DEFAULT_INTERVAL_SEC, MIN_INTERVAL_SEC),
+        "health_webhook": _normalize_url(raw.get("health_webhook")),
         "targets": _normalize_targets(raw.get("targets"), valid_parts),
     }
 

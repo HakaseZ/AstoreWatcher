@@ -139,7 +139,15 @@
         <input type="number" id="inpInterval" min="30" step="10">
         <div class="hint" id="hintInterval"></div>
       </div>
+      <div class="field">
+        <label for="inpHealthHook">告警推送地址（Bark）</label>
+        <input type="text" id="inpHealthHook" placeholder="https://api.day.app/你的key"
+               autocomplete="off" spellcheck="false">
+        <div class="hint">Watcher 自身连续失败时推到这里，与各推送目标分开。
+          留空则不推送告警 —— 那时只能靠容器健康检查发现问题。</div>
+      </div>
     </div>
+    <div class="hint" id="healthStatus">健康状态加载中…</div>
   </section>
 
   <section class="card">
@@ -234,6 +242,51 @@
     }
   }
 
+  // ------------------------------------------------------------ 健康状态（只读展示）
+
+  // Watcher 每轮结束都会写 data/health.json，这里是它的可见化。之所以要做进界面：
+  // 上次事故里 Watcher 几个月没取到数据却看上去「一直在跑」，只查日志是很难发现的。
+  async function loadHealth() {
+    try {
+      renderHealth(await api("/api/health"));
+    } catch (e) {
+      showMsg("健康状态加载失败：" + e.message, "err");
+    }
+  }
+
+  function renderHealth(h) {
+    var el = $("healthStatus");
+    if (!el) return;
+    if (!h || !h.available) {
+      el.className = "hint warn";
+      el.textContent = "Watcher 尚未写入健康状态（可能还没跑完第一轮）";
+      return;
+    }
+    var parts = ["上次成功检查：" + esc(h.last_success_at || "—")];
+    if (h.last_success_epoch) {
+      // last_success_epoch 是 Python time.time() 的 Unix 秒级时间戳；Date.now()/1000 也是秒，
+      // 二者之差是「秒」，必须先换算成分钟/小时再显示，否则会把秒当成分钟（数值大 60 倍）。
+      // clamp 到 0：浏览器时钟若比服务器慢（跨机器时钟漂移），差值会是负数，
+      // 不夹住就会显示「-5 秒前」这种荒谬文本。
+      var secs = Math.max(0, Math.floor(Date.now() / 1000 - h.last_success_epoch));
+      var mins = Math.floor(secs / 60);
+      parts.push(mins < 1 ? secs + " 秒前"
+                : mins < 90 ? mins + " 分钟前"
+                : Math.floor(mins / 60) + " 小时前");
+    }
+    if (h.round_ms) parts.push("本轮耗时 " + h.round_ms + "ms");
+    if (h.profile_bytes) parts.push("profile " + Math.floor(h.profile_bytes / 1048576) + "MB");
+    if (h.disk_free_mb) parts.push("剩余磁盘 " + h.disk_free_mb + "MB");
+    if (h.consecutive_failures) {
+      parts.push("连续失败 " + h.consecutive_failures + " 次：" +
+                 esc(h.last_error_kind || "") + (h.last_error ? " " + esc(h.last_error) : ""));
+    }
+    if (!h.health_webhook_set) parts.push("未配置告警地址");
+
+    el.className = "hint" + (h.consecutive_failures || !h.health_webhook_set ? " warn" : "");
+    el.innerHTML = parts.join(" · ");
+  }
+
   function hasDraft() { return !!draft; }
 
   // ------------------------------------------------------------ 加载
@@ -268,6 +321,7 @@
 
   function syncPoll() {
     $("inpInterval").value = state.interval_sec;
+    $("inpHealthHook").value = state.health_webhook || "";
     checkPollHints();
   }
 
@@ -529,6 +583,14 @@
     intervalTimer = setTimeout(persistConfig, 600);  // 改好即保存
   });
 
+  var hookTimer = null;
+  $("inpHealthHook").addEventListener("input", function () {
+    state.health_webhook = $("inpHealthHook").value.trim();
+    markDirty();
+    if (hookTimer) clearTimeout(hookTimer);
+    hookTimer = setTimeout(persistConfig, 600);  // 与轮询间隔一致：改好即保存
+  });
+
   $("btnAdd").addEventListener("click", function () { startEdit(null); });
   $("btnReload").addEventListener("click", function () {
     if (draft && !confirm("有未完成的编辑，确定重新加载并丢弃？")) return;
@@ -611,7 +673,10 @@
     if (e.target.closest("#btnEditCancel") && draft) { cancelDraft(); return; }
   });
 
-  loadAll();
+  loadAll().then(function () {
+    loadHealth();                    // 打开页面立刻显示健康状态，不等首个 60s 轮询
+    setInterval(loadHealth, 60000);  // 界面常开时持续显示死活，不用手动刷新
+  });
 })();
 </script>
 </body>

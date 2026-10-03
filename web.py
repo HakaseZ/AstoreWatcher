@@ -26,7 +26,7 @@ import json
 import os
 import urllib.error
 import urllib.request
-from datetime import datetime, timedelta, timezone
+from datetime import datetime
 
 import config as config_mod
 import state as state_mod
@@ -46,7 +46,8 @@ DEFAULT_PUSH_MODE = "merged"      # 请求模型的默认值；实际兜底由 c
 BARK_GROUP = "AstoreWatcher"
 BARK_TIMEOUT = 10                 # 秒
 
-HK_TZ = timezone(timedelta(hours=8))
+# 时区常量统一由 config 定义（worker 子进程也要用，不能依赖 FastAPI 模块）
+HK_TZ = config_mod.HK_TZ
 
 
 def config_path() -> str:
@@ -165,6 +166,28 @@ def commit(data: dict) -> dict:
     return saved
 
 
+def data_dir() -> str:
+    """Watcher 与界面共用的数据目录（container 内默认为 /data）。
+
+    界面读写的 config.json / init.json / state.json / health.json 都在这里，
+    与 watcher（poller.DEFAULT_DATA_DIR）必须一致。
+    """
+    return os.path.dirname(os.path.abspath(config_path()))
+
+
+def last_checked_at() -> str:
+    """上一轮成功取数的时刻（精确到分钟），取自 watcher 写的 health.json。"""
+    try:
+        with open(os.path.join(data_dir(), "health.json"), encoding="utf-8") as f:
+            data = json.load(f)
+    except (OSError, ValueError):
+        return ""
+    stamp = (data or {}).get("last_success_at") if isinstance(data, dict) else None
+    if not isinstance(stamp, str) or len(stamp) < 16:
+        return ""
+    return stamp[:16]  # "2026-10-01 14:32:00" → "2026-10-01 14:32"
+
+
 def push_cached_first_full(target: dict) -> dict:
     """重新启用 / 新建目标时，立即用上一轮缓存快照（data/state.json）推一条全量，
     不等待 Watcher 跑浏览器周期（≈2s，类比测试推送）。推成功才写首推标记，
@@ -183,6 +206,8 @@ def push_cached_first_full(target: dict) -> dict:
     sku_meta = {s["part"]: s for s in load_skus() if isinstance(s, dict) and s.get("part")}
     title, body = notifier.format_snapshot(
         snapshot, target.get("parts") or [], sku_meta, target.get("stores") or [])
+    # 这里用的是上一轮缓存快照，时间戳取自该轮的成功时刻（health.json）
+    body = notifier.with_checked_at(body, last_checked_at())
     ok, detail = bark_post(
         target.get("bark_url", ""),
         title, body,
@@ -224,6 +249,8 @@ class TargetIn(BaseModel):
 class ConfigIn(BaseModel):
     location: str = config_mod.DEFAULT_LOCATION
     interval_sec: int = config_mod.DEFAULT_INTERVAL_SEC
+    # 运维告警地址：Watcher 自身连续失败时推送，与各推送目标解耦
+    health_webhook: str = ""
     targets: list[TargetIn] = []
 
 
@@ -280,6 +307,26 @@ def api_get_config() -> dict:
     与 watcher 读同一个文件、同一套 validate，界面看到的就是实际生效的配置。
     """
     return read_config()
+
+
+@app.get("/api/health")
+def api_get_health() -> dict:
+    """Watcher 的健康状态（读 watcher 每轮写的 health.json）。
+
+    只做展示：这里不判断是否健康 —— 那件事由 `main.py health` 按「上次成功取数」
+    的新鲜度判定并交给 docker healthcheck。两者职责分开，避免界面和容器层
+    用两套口径得出不同结论。
+    """
+    try:
+        with open(os.path.join(data_dir(), "health.json"), encoding="utf-8") as f:
+            data = json.load(f)
+    except (OSError, ValueError):
+        return {"available": False, "health_webhook_set": False}
+    if not isinstance(data, dict) or not data:
+        return {"available": False, "health_webhook_set": False}
+    data["available"] = True
+    data["health_webhook_set"] = bool(read_config().get("health_webhook"))
+    return data
 
 
 @app.put("/api/config")

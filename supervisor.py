@@ -429,13 +429,33 @@ class Health:
                                f"连续 {self.failures} 轮取数失败，请检查容器日志。")
                     self.last_alert_at = now
                     self.alerted = True
+                    self._persist_alerted()
             elif self.alerted and self.failures == 0:
                 self._send(webhook, "Watcher 已恢复正常", "取数已恢复，期间的库存变动可能未被监测到。")
                 self.alerted = False
                 self.last_alert_at = 0.0
+                self._persist_alerted()
         except Exception as e:
             log.error("推送健康告警失败（忽略）：%s", e)
         return self.alerted
+
+    def _persist_alerted(self):
+        """把刚改过的 alerted 立刻写回 health.json。
+
+        主循环是先 record()（写盘用的是**改之前**的 alerted）再 maybe_alert()（这才改
+        alerted）的，若不在改完后立刻补写，就要等下一轮 record() 才落盘 —— 中间这
+        一轮（约 2 分钟）内一旦容器重启，alerted 就丢了，恢复时再也发不出
+        「已恢复正常」那条。这里是 patch 式改写：只动 alerted 一个字段，
+        不覆盖 watcher 刚写的其它字段。
+        """
+        try:
+            prev = load_health(self.data_dir)
+            if not isinstance(prev, dict):
+                prev = {}
+            prev["alerted"] = self.alerted
+            _atomic_write_json(health_path(self.data_dir), prev)
+        except OSError as e:
+            log.error("写入 alerted 失败（忽略）：%s", e)
 
     def _send(self, webhook, title, body):
         ok, detail = notifier.send(webhook, title, body, icon=notifier.APPLE_ICON,

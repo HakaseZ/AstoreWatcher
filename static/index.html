@@ -264,8 +264,13 @@
     }
     var parts = ["上次成功检查：" + esc(h.last_success_at || "—")];
     if (h.last_success_epoch) {
-      var mins = Math.floor(Date.now() / 1000 - h.last_success_epoch);
-      parts.push(mins < 90 ? mins + " 分钟前" : Math.floor(mins / 60) + " 小时前");
+      // last_success_epoch 是 Python time.time() 的 Unix 秒级时间戳；Date.now()/1000 也是秒，
+      // 二者之差是「秒」，必须先换算成分钟/小时再显示，否则会把秒当成分钟（数值大 60 倍）。
+      var secs = Math.floor(Date.now() / 1000 - h.last_success_epoch);
+      var mins = Math.floor(secs / 60);
+      parts.push(mins < 1 ? secs + " 秒前"
+                : mins < 90 ? mins + " 分钟前"
+                : Math.floor(mins / 60) + " 小时前");
     }
     if (h.round_ms) parts.push("本轮耗时 " + h.round_ms + "ms");
     if (h.profile_bytes) parts.push("profile " + Math.floor(h.profile_bytes / 1048576) + "MB");

@@ -193,32 +193,35 @@ def _merged_messages(changes, sku_meta, order_url):
 
 
 def _per_store_messages(changes, sku_meta, order_url):
-    """per_store 模式：按门店分条，每家门店一条，正文列该店所有变化的 SKU。
+    """per_store 模式：按「门店 + 方向」分条，一家店最多两条（有貨了 / 無貨了）。
 
-    该店只要有任意「有货」变动，就附 order_url（点横幅去下单）。
+    同一家店同时有补货和售罄时**必须拆成两条**：混在一条「有貨了」里、正文却夹着
+    「暫無供應」的 SKU，读的人根本不知道到底能不能去买。拆分后每条只含同一方向的
+    SKU，标题与正文一致。有货那条才带 order_url。
     """
-    order = []
+    stores = []
     by_store = {}
     for c in changes:
         store = c.get("store") or ""
         if store not in by_store:
-            by_store[store] = []
-            order.append(store)  # 保持门店出现顺序
-        by_store[store].append(c)
+            by_store[store] = {}
+            stores.append(store)  # 保持门店出现顺序
+        to = "available" if c.get("to") == "available" else "unavailable"
+        by_store[store].setdefault(to, []).append(c)
 
     messages = []
-    for store in order:
-        items = by_store[store]
-        # 该店只要有任意一个 SKU 有货，标题就算「有貨了」
-        has_available = any(c.get("to") == "available" for c in items)
-        title = f"{config_mod.to_display(store)} 有貨了" if has_available else f"{config_mod.to_display(store)} 無貨了"
-        lines = []
-        for c in items:
-            label = _sku_label(c.get("part") or "", sku_meta)
-            quote = c.get("quote") or ("可取貨" if c.get("to") == "available" else "暫無供應")
-            lines.append(f"{label}：{quote}")
-        url = order_url if has_available else None
-        messages.append((title, "\n".join(lines), url))
+    for store in stores:
+        for to in ("available", "unavailable"):  # 同一家店的两条相邻，有货在前
+            items = (by_store[store].get(to) or [])
+            if not items:
+                continue
+            title = (f"{config_mod.to_display(store)} 有貨了"
+                     if to == "available" else f"{config_mod.to_display(store)} 無貨了")
+            lines = [f"{_sku_label(c.get('part') or '', sku_meta)}："
+                     f"{c.get('quote') or ('可取貨' if to == 'available' else '暫無供應')}"
+                     for c in items]
+            url = order_url if to == "available" else None
+            messages.append((title, "\n".join(lines), url))
     return messages
 
 

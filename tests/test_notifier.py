@@ -357,6 +357,26 @@ class BuildMessagesTest(unittest.TestCase):
         self.assertIn("iPhone 18 Pro Max 256GB 布根地紅色", body)
         self.assertIn("iPhone 18 Pro Max 512GB 布根地紅色", body)
 
+    def test_per_store_splits_available_and_unavailable(self):
+        """同一家店同时有补货和售罄 → 拆成两条，每条只含同一方向的 SKU。
+        混在一条「有貨了」里夹着「暫無供應」会让人不知道到底能不能买。"""
+        meta = {
+            "P1": {"model": "iPhone 18 Pro", "color": "黑色", "capacity": "256GB"},
+            "P2": {"model": "iPhone 18 Pro Max", "color": "布根地紅色", "capacity": "512GB"},
+        }
+        changes = [
+            {"part": "P1", "store": "ifc mall", "to": "available", "quote": "今日可取"},
+            {"part": "P2", "store": "ifc mall", "to": "unavailable", "quote": "暫無供應"},
+        ]
+        msgs = notifier.build_messages({"push_mode": "per_store"}, changes, meta)
+        self.assertEqual(len(msgs), 2)
+        self.assertEqual(msgs[0][0], "Apple 中環 有貨了")
+        self.assertEqual(msgs[0][1].split("\n")[0], "iPhone 18 Pro 256GB 黑色：今日可取")
+        self.assertEqual(msgs[0][2], notifier.APPLE_HOME)   # 有货才带链接
+        self.assertEqual(msgs[1][0], "Apple 中環 無貨了")
+        self.assertEqual(msgs[1][1].split("\n")[0], "iPhone 18 Pro Max 512GB 布根地紅色：暫無供應")
+        self.assertIsNone(msgs[1][2])
+
     def test_per_store_grouping_same_store(self):
         meta = {
             "P1": {"model": "iPhone 18 Pro", "color": "黑色", "capacity": "256GB"},

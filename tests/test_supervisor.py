@@ -266,6 +266,21 @@ class HealthTest(unittest.TestCase):
             self.assertEqual(send.call_count, 2)
             self.assertIn("已恢复正常", send.call_args[0][1])
 
+    def test_failure_count_survives_restart(self):
+        """连续失败次数也要跨重启恢复。
+
+        只恢复 alerted、计数却归零的话，重启后要重新攒够 HEALTH_ALERT_AFTER 才告警
+        —— 故障明明在持续，告警却被推迟；health.json 里的 consecutive_failures 也失真。
+        """
+        for _ in range(2):
+            self.health.record(ok=False, kind="FETCH_CRASHED")
+        self.assertEqual(supervisor.load_health(self.data)["consecutive_failures"], 2)
+
+        restarted = supervisor.Health(self.data)  # 模拟容器重启
+        self.assertEqual(restarted.failures, 2)
+        restarted.record(ok=False, kind="FETCH_CRASHED")
+        self.assertEqual(supervisor.load_health(self.data)["consecutive_failures"], 3)
+
     def test_alert_failure_never_raises(self):
         """告警自身的任何异常都不能把主循环拖垮。"""
         for _ in range(supervisor.HEALTH_ALERT_AFTER):

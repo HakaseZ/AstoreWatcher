@@ -412,11 +412,16 @@ class Health:
 
     def __init__(self, data_dir):
         self.data_dir = data_dir
-        self.failures = 0
+        # 连续失败次数与「已告警」都要跨重启恢复（同一次读盘，两个值口径一致）：
+        # 只恢复 alerted 而计数归零的话，重启后要重新攒够阈值才告警 —— 故障被推迟，
+        # health.json 里的 consecutive_failures 也会失真。
+        prev = load_health(data_dir)
+        try:
+            self.failures = max(0, int(prev.get("consecutive_failures") or 0))
+        except (TypeError, ValueError):
+            self.failures = 0
         self.last_alert_at = 0.0
-        # 「已告警」状态要落盘才能跨重启存活：容器重启后 Health 是个新实例，
-        # 只看内存状态的话，故障恢复时永远发不出「已恢复正常」那一条。
-        self.alerted = bool(load_health(data_dir).get("alerted"))
+        self.alerted = bool(prev.get("alerted"))
 
     def record(self, *, ok, kind="", error="", round_ms=0, profile=None):
         """把本轮结果写进 health.json。返回写出的字典。"""

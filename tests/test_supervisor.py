@@ -249,6 +249,23 @@ class HealthTest(unittest.TestCase):
             self.assertEqual(send.call_count, 2)
             self.assertIn("已恢复正常", send.call_args[0][1])
 
+    def test_recovery_notification_survives_restart(self):
+        """容器重启后 Health 是新实例 —— 只看内存状态就再也发不出「已恢复正常」，
+        所以「已告警」这个标记必须落盘。"""
+        webhook = "https://api.day.app/hook"
+        with mock.patch.object(supervisor.notifier, "send", return_value=(True, "ok")) as send:
+            for _ in range(supervisor.HEALTH_ALERT_AFTER):
+                self.health.record(ok=False, kind="FETCH_CRASHED")
+            self.health.maybe_alert(self._cfg(webhook))
+            self.assertEqual(send.call_count, 1)
+            self.health.record(ok=False, kind="FETCH_CRASHED")  # 把 alerted 落盘
+
+            restarted = supervisor.Health(self.data)  # 模拟容器重启
+            restarted.record(ok=True, kind="OK")
+            restarted.maybe_alert(self._cfg(webhook))
+            self.assertEqual(send.call_count, 2)
+            self.assertIn("已恢复正常", send.call_args[0][1])
+
     def test_alert_failure_never_raises(self):
         """告警自身的任何异常都不能把主循环拖垮。"""
         for _ in range(supervisor.HEALTH_ALERT_AFTER):

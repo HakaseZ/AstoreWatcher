@@ -374,7 +374,9 @@ class Health:
         self.data_dir = data_dir
         self.failures = 0
         self.last_alert_at = 0.0
-        self.alerted = False
+        # 「已告警」状态要落盘才能跨重启存活：容器重启后 Health 是个新实例，
+        # 只看内存状态的话，故障恢复时永远发不出「已恢复正常」那一条。
+        self.alerted = bool(load_health(data_dir).get("alerted"))
 
     def record(self, *, ok, kind="", error="", round_ms=0, profile=None):
         """把本轮结果写进 health.json。返回写出的字典。"""
@@ -396,6 +398,7 @@ class Health:
             "consecutive_failures": self.failures,
             "last_error_kind": kind,
             "last_error": error,
+            "alerted": self.alerted,
             "round_ms": round_ms,
             "profile_bytes": (_dir_bytes(profile) if profile and os.path.isdir(profile) else 0),
         }

@@ -141,11 +141,13 @@ def run_once(cfg, sku_meta, profile, state_path, init_path, executable=None, dat
         if not t.get("enabled", True):
             continue
         tid = t.get("id")
-        parts = t.get("parts") or []
+        # 刻意叫 t_parts 而不是 parts：外层 parts 是「全部启用目标的 SKU」，
+        # 同名会被这里覆盖，循环后若再读 parts 就会拿到最后一个目标的（很难发现的坑）。
+        t_parts = t.get("parts") or []
         stores = t.get("stores") or []
 
         # SKU 与门店均为必填（前端已拦截保存，这里再兜底防止空配置误推全部）
-        if not parts or not stores:
+        if not t_parts or not stores:
             log.warning("目标「%s」未选择 SKU 或门店（两者均为必填），本轮跳过",
                         t.get("name") or tid or "（无名）")
             continue
@@ -155,15 +157,15 @@ def run_once(cfg, sku_meta, profile, state_path, init_path, executable=None, dat
             # 空快照护栏：本轮 Apple 接口没返回任何关注中的 SKU（偶发空响应 /
             # SSL 抖动）时，不推送、也不写 init 标记，下轮拿到真实数据再推全量，
             # 避免发出「共 0 个 SKU」废纸推送并把目标锁死。
-            matched = [p for p in parts if p in snapshot]
+            matched = [p for p in t_parts if p in snapshot]
             if not matched:
                 log.warning("目标「%s」本轮未匹配到任何 SKU（Apple 接口可能暂未返回），"
                             "暂不推送，下轮重试", t.get("name") or tid)
                 continue
-            title, body = notifier.format_snapshot(snapshot, parts, sku_meta, stores)
+            title, body = notifier.format_snapshot(snapshot, t_parts, sku_meta, stores)
             # 首推全量：仅当所选范围内有货才带下单链接，全无货则不带（与变动推送一致）
             first_url = (t.get("order_url") or notifier.APPLE_HOME) \
-                if notifier.snapshot_has_available(snapshot, parts, stores) else None
+                if notifier.snapshot_has_available(snapshot, t_parts, stores) else None
             ok, detail = notifier.send(
                 t.get("bark_url"), title, body,
                 icon=notifier.APPLE_ICON,
@@ -172,13 +174,13 @@ def run_once(cfg, sku_meta, profile, state_path, init_path, executable=None, dat
             )
             log.info("目标「%s」首次全量推送：%s", t.get("name") or tid, "成功" if ok else f"失败 {detail}")
             if ok:  # 失败则不落标记，下一轮重试全量推送
-                to_add[tid] = {"since": now, "parts": list(parts)}
+                to_add[tid] = {"since": now, "parts": list(t_parts)}
             continue
 
         # 已初始化：拆成「已有 SKU 的变化」+「新增 SKU 的当前状态」
         seen = set((baseline.get(tid) or {}).get("parts") or [])
-        new_parts = [p for p in parts if p not in seen]
-        existing = [p for p in parts if p in seen]
+        new_parts = [p for p in t_parts if p not in seen]
+        existing = [p for p in t_parts if p in seen]
 
         # edge A：新增 SKU → 只推该 SKU 的当前状态（含无货），不推已有 SKU
         if new_parts:
@@ -193,7 +195,7 @@ def run_once(cfg, sku_meta, profile, state_path, init_path, executable=None, dat
             # 无实际推送（门店过滤后为空）或全部成功才记为已见；否则下一轮重试
             if not results or (ok == len(results)):
                 to_add[tid] = {"since": (baseline.get(tid) or {}).get("since") or now,
-                               "parts": list(parts)}
+                               "parts": list(t_parts)}
 
         # 已有 SKU：只推库存变动
         if existing:
